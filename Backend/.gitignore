@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+*.log
+
+# Environnement
+.env
+.venv/
+venv/
+ENV/
+env/
+
+# Django
+staticfiles/
+media/
+db.sqlite3
+*.sqlite3
+
+# Donnees
+data/*.duckdb
+data/*.parquet
+data/*.csv
+data/*.tsv
+data/*.json
+
+# Tests / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Node (si tu ajoutes un frontend)
+node_modules/
+dist/
+build/
+
+# Docker
+*.pid

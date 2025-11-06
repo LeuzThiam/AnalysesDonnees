@@ -1,0 +1,13 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    # Datasets
+    path("datasets", views.datasets_list, name="analytics_datasets_list"),
+    path("datasets/upload", views.upload_dataset, name="analytics_upload_dataset"),
+    path("datasets/<str:table>/preview", views.datasets_preview, name="analytics_datasets_preview"),
+
+    # Queries
+    path("query/sql", views.query_sql, name="analytics_query_sql"),
+    path("query/nl", views.query_nl, name="analytics_query_nl"),
+]

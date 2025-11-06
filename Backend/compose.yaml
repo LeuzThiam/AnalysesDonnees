@@ -1,0 +1,18 @@
+services:
+  web:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.local}
+    ports:
+      - "8000:8000"
+    command: >
+      sh -lc "
+      pip install --no-cache-dir -r requirements.txt &&
+      python src/manage.py migrate &&
+      python src/manage.py runserver 0.0.0.0:8000
+      "

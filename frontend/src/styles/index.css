@@ -1,0 +1,6 @@
+:root { --fg:#111; --bg:#fff; --muted:#666; } 
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg)}
+.container{max-width:1000px;margin:20px auto;padding:0 16px}
+.card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:10px 0;background:#fff}
+.pre{background:#f7f7f9;border:1px solid #eee;border-radius:8px;padding:8px;overflow:auto}
+.table-wrap{overflow-x:auto}
