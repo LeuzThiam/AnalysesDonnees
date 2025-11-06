@@ -319,6 +319,8 @@ export default function Ask() {
   const [resultText, setResultText] = useState("");
   const [stdout, setStdout] = useState("");
   const [suggestions, setSuggestions] = useState([]);
+  const [analysis, setAnalysis] = useState("");
+
 
   useEffect(() => {
     (async () => {
@@ -376,6 +378,7 @@ export default function Ask() {
         limit: Number(limit) > 0 ? Number(limit) : 1000,
       };
       const data = await unwrap(api.post("/analytics/query/nl", payload));
+      setAnalysis(data.analysis || "");
 
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setChart(typeof data.chart === "string" ? data.chart : "");
@@ -510,6 +513,13 @@ export default function Ask() {
 
       {error && <div className="alert alert-danger mt-3">{error}</div>}
       {summary && <div className="alert alert-info mt-3 shadow-sm">{summary}</div>}
+      {analysis && (
+        <div className="alert alert-success mt-3 shadow-sm">
+          <h6 className="fw-bold mb-2"><i className="bi bi-lightbulb me-1"></i> Analyse automatique</h6>
+          <p className="mb-0">{analysis}</p>
+        </div>
+      )}
+
 
       {sql && (
         <details className="mt-3">
