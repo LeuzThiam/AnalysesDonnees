@@ -9,8 +9,9 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
+import duckdb
 
-# ✅ nouveaux imports (remplace les anciens)
+# ✅ Imports internes
 from .duck import (
     load_to_duckdb,
     list_tables,
@@ -24,14 +25,64 @@ from .services.planner import build_sql_from_plan
 from integrations.n8n import nl_to_sql as n8n_nl_to_sql, is_configured as n8n_is_configured
 from .services.pandas_runner import run_pandas_analysis
 
+# ============================================================
+# 🔧 Correction automatique du type de graphique (fallback)
+# ============================================================
+
+def auto_fix_chart_spec(question: str, chart_spec: dict, rows: list) -> dict:
+    """Corrige ou déduit automatiquement le type de graphique selon la question."""
+    q = question.lower().strip()
+    if not isinstance(chart_spec, dict):
+        chart_spec = {}
+
+    # 🧠 Détection du type si manquant ou 'table'
+    if not chart_spec.get("type") or chart_spec.get("type") == "table":
+        if any(k in q for k in ["répartition", "proportion", "distribution", "part", "pourcentage", "par nationalité", "par pays"]):
+            chart_spec["type"] = "pie"
+        elif any(k in q for k in ["évolution", "temps", "mois", "jour", "chronologique", "par semaine", "timeline"]):
+            chart_spec["type"] = "line"
+        elif any(k in q for k in ["classement", "top", "meilleur", "pire", "comparaison", "plus", "moins"]):
+            chart_spec["type"] = "bar"
+        elif any(k in q for k in ["corrélation", "relation", "vs", "entre"]):
+            chart_spec["type"] = "scatter"
+        elif any(k in q for k in ["zone", "aire", "cumul", "progression"]):
+            chart_spec["type"] = "area"
+        elif any(k in q for k in ["entonnoir", "funnel"]):
+            chart_spec["type"] = "funnel"
+        elif any(k in q for k in ["radial", "cercle concentrique", "progression circulaire"]):
+            chart_spec["type"] = "radial_bar"
+        elif any(k in q for k in ["treemap", "hiérarchie", "structure"]):
+            chart_spec["type"] = "treemap"
+        elif any(k in q for k in ["radar", "compétences", "profil", "polygone"]):
+            chart_spec["type"] = "radar"
+        elif any(k in q for k in ["empilé", "stacked"]):
+            chart_spec["type"] = "stacked_bar"
+        else:
+            chart_spec["type"] = "table"  # par défaut, renvoyer table si rien n'est graphique
+
+
+    # 🔒 Sécurisation des clés x/y à partir des données réelles
+    if "x" not in chart_spec and rows and isinstance(rows[0], dict):
+        chart_spec["x"] = list(rows[0].keys())[0]
+    if "y" not in chart_spec and rows and isinstance(rows[0], dict):
+        chart_spec["y"] = list(rows[0].keys())[1] if len(rows[0]) > 1 else list(rows[0].keys())[0]
+
+    return chart_spec
+
+
 logger = logging.getLogger(__name__)
 
-# ----------------------------- Normalisations -----------------------------
+# ---------------------------------------------------------------------------
+# 🧩 Normalisation des noms
+# ---------------------------------------------------------------------------
+
 def _normalize_dataset_name(name: str) -> str:
+    """Nettoie un nom de dataset pour qu’il soit compatible avec DuckDB."""
     return re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip()).strip("_").lower()
 
 
 def _normalize_column_name(name: str) -> str:
+    """Nettoie un nom de colonne pour l’usage SQL."""
     col = re.sub(r"\W+", "_", str(name).strip().lower())
     if re.match(r"^\d", col):
         col = f"col_{col}"
@@ -39,6 +90,7 @@ def _normalize_column_name(name: str) -> str:
 
 
 def _infer_left_var_from_read_csv(code: str) -> str | None:
+    """Détecte la variable affectée au read_csv pour réinjection DuckDB."""
     if not code:
         return None
     m = re.search(r"^\s*([A-Za-z_]\w*)\s*=\s*pd\.read_csv\(", code, flags=re.MULTILINE)
@@ -46,29 +98,25 @@ def _infer_left_var_from_read_csv(code: str) -> str | None:
 
 
 def _inject_duckdb_preamble(code: str, table_name: str, prefer_var: str | None = None) -> str:
+    """Injecte le chargement DuckDB dans le code Python généré par le LLM."""
     left_var = _infer_left_var_from_read_csv(code) or prefer_var or "df"
-    patched = code or ""
-    patched = re.sub(
-        r"(\b[A-Za-z_]\w*\b\s*=\s*)pd\.read_csv\([^)]*\)",
-        rf"\1{left_var}  # remplacé: lecture via DuckDB",
-        patched,
-        flags=re.MULTILINE,
-    )
-    patched = re.sub(r"pd\.read_csv\([^)]*\)", left_var, patched, flags=re.MULTILINE)
+    patched = re.sub(r"pd\.read_csv\([^)]*\)", left_var, code or "", flags=re.MULTILINE)
 
     preamble = f"""
 import duckdb as _ddb
 _con = _ddb.connect(r'{settings.DUCKDB_PATH}')
 {left_var} = _con.execute('SELECT * FROM "{table_name}"').df()
 """
-    return preamble + "\n" + patched
+    return preamble.strip() + "\n\n" + patched.strip()
 
 
-# ----------------------- Profilage / inférence -----------------------------
+# ---------------------------------------------------------------------------
+# 📊 Profilage automatique
+# ---------------------------------------------------------------------------
+
 _DATE_SYNONYMS = ("date", "jour", "day", "time", "timestamp", "datetime", "created", "due")
 _NUM_SYNONYMS = ("cases", "cas", "total_cases", "value", "amount", "sum", "count", "nb", "y")
 _ID_LIKE = {"id", "task id", "task_id"}
-
 
 def _duck_profile(dataset: str) -> dict:
     return profile_table(dataset, limit=50) or {}
@@ -89,44 +137,46 @@ def _infer_columns(dataset: str):
     info = _duck_profile(dataset)
     cols = info.get("columns", [])
 
+    # 🔹 Colonne de date
     date_col = next((c["name"] for c in cols if _is_dt_dtype(c["dtype"])), None)
     if not date_col:
         for p in _DATE_SYNONYMS:
             for c in cols:
-                nm = str(c["name"]).lower().replace(" ", "_")
-                if p in nm:
+                if p in str(c["name"]).lower().replace(" ", "_"):
                     date_col = c["name"]
                     break
             if date_col:
                 break
 
-    num_col = None
-    for c in cols:
-        if _is_num_dtype(c["dtype"]):
-            nm = str(c["name"]).lower()
-            if nm not in _ID_LIKE:
-                num_col = c["name"]
-                break
-
-    cat_col = next((c["name"] for c in cols if not _is_num_dtype(c["dtype"]) and not _is_dt_dtype(c["dtype"])), None)
-
-    # bonus: si pas de num_col, essayer par nom
+    # 🔹 Colonne numérique
+    num_col = next(
+        (c["name"] for c in cols if _is_num_dtype(c["dtype"]) and str(c["name"]).lower() not in _ID_LIKE),
+        None,
+    )
     if not num_col:
         for p in _NUM_SYNONYMS:
             for c in cols:
-                nm = str(c["name"]).lower().replace(" ", "_")
-                if p in nm:
+                if p in str(c["name"]).lower().replace(" ", "_"):
                     num_col = c["name"]
                     break
             if num_col:
                 break
 
+    # 🔹 Colonne catégorielle
+    cat_col = next(
+        (c["name"] for c in cols if not _is_num_dtype(c["dtype"]) and not _is_dt_dtype(c["dtype"])),
+        None,
+    )
+
     return date_col, num_col, cat_col
 
 
-# ---------------------- Génération SQL à partir du chart_spec ----------------
+# ---------------------------------------------------------------------------
+# 🧠 Génération SQL automatique selon le type de graphique
+# ---------------------------------------------------------------------------
+
 def _synth_sql_from_spec(dataset: str, spec: dict) -> tuple[str | None, dict]:
-    """Retourne (sql, spec_normalisée)."""
+    """Retourne (sql, spec_normalisée). Gère aussi les histogrammes automatiques."""
     if not isinstance(spec, dict):
         return None, spec or {}
 
@@ -138,6 +188,7 @@ def _synth_sql_from_spec(dataset: str, spec: dict) -> tuple[str | None, dict]:
     def q(col: str) -> str:
         return f'"{col}"'
 
+    # 🔹 Histogramme simple (ex : distribution des valeurs)
     if typ == "histogram":
         x = spec.get("x") or num_col
         if not x:
@@ -145,6 +196,7 @@ def _synth_sql_from_spec(dataset: str, spec: dict) -> tuple[str | None, dict]:
         spec_norm.setdefault("bins", 20)
         return f'SELECT {q(x)} FROM "{dataset}" WHERE {q(x)} IS NOT NULL', spec_norm
 
+    # 🔹 Graphique en barres
     if typ in ("bar", "bar_horizontal"):
         x = spec.get("x") or cat_col
         y = spec.get("y") or num_col
@@ -159,6 +211,7 @@ ORDER BY 2 DESC;
 '''
         return sql.strip(), spec_norm
 
+    # 🔹 Série temporelle
     if typ in ("line", "timeseries"):
         x = spec.get("x") or date_col
         y = spec.get("y") or num_col
@@ -173,6 +226,7 @@ ORDER BY 1;
 '''
         return sql.strip(), spec_norm
 
+    # 🔹 Graphique circulaire
     if typ == "pie":
         label = spec.get("label") or cat_col
         value = spec.get("value") or num_col
@@ -187,20 +241,29 @@ ORDER BY 2 DESC;
 '''
         return sql.strip(), spec_norm
 
+    # 🔹 Table simple
     if typ == "table":
         return f'SELECT * FROM "{dataset}" LIMIT 1000;', spec_norm
+
+    # 🧠 Nouvelle logique : détection automatique d’histogrammes
+    # Si le LLM ne précise pas le type, on tente de deviner à partir du SQL
+    if "GROUP BY" in spec.get("sql", "").upper() or "COUNT(" in spec.get("sql", "").upper():
+        spec_norm.setdefault("type", "histogram")
+        spec_norm.setdefault("x", cat_col or num_col or "x")
+        spec_norm.setdefault("y", "count")
 
     return None, spec_norm
 
 
-# -------------------------------- Endpoints --------------------------------
+# ---------------------------------------------------------------------------
+# 🌐 Endpoints API
+# ---------------------------------------------------------------------------
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 @permission_classes([AllowAny])
 def upload_dataset(request):
-    """
-    Charge un dataset (CSV, XLSX, JSON, Parquet) dans DuckDB.
-    """
+    """Upload et chargement dans DuckDB."""
     try:
         upfile = request.FILES.get("file")
         if not upfile:
@@ -212,8 +275,8 @@ def upload_dataset(request):
         if ext in ("csv", "xlsx", "xls", "json", "parquet"):
             info = load_to_duckdb(upfile, dataset, file_type=ext if ext != "xls" else "excel")
             return JsonResponse({"ok": True, "table": dataset, **info}, status=201)
-        else:
-            return JsonResponse({"detail": "Format non supporté (CSV, XLSX, JSON, Parquet)."}, status=400)
+
+        return JsonResponse({"detail": "Format non supporté (CSV, XLSX, JSON, Parquet)."}, status=400)
 
     except Exception as e:
         logger.exception("upload_dataset: erreur inattendue")
@@ -224,8 +287,7 @@ def upload_dataset(request):
 @permission_classes([AllowAny])
 def datasets_list(request):
     try:
-        tables = list_tables()
-        return JsonResponse({"tables": tables})
+        return JsonResponse({"tables": list_tables()})
     except Exception as e:
         logger.exception("datasets_list: erreur inattendue")
         return JsonResponse({"detail": str(e)}, status=500)
@@ -235,8 +297,7 @@ def datasets_list(request):
 @permission_classes([AllowAny])
 def datasets_preview(request, table: str):
     try:
-        limit = int(request.GET.get("limit", 10))
-        limit = max(1, min(limit, 1000))
+        limit = max(1, min(int(request.GET.get("limit", 10)), 1000))
         info = profile_table(table, limit=limit)
         return JsonResponse({"table": table, **info})
     except Exception as e:
@@ -247,10 +308,14 @@ def datasets_preview(request, table: str):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def query_sql(request):
+    """Exécute une requête SQL brute (avec vérification de sécurité)."""
     try:
         sql = (request.data.get("sql") or "").strip()
         if not sql:
             return JsonResponse({"detail": "Champ 'sql' requis."}, status=400)
+
+        if not is_safe(sql):
+            return JsonResponse({"detail": "Requête SQL non autorisée."}, status=400)
 
         rows = run_sql_safe(sql)
         return JsonResponse({"rows": rows})
@@ -259,27 +324,53 @@ def query_sql(request):
         return JsonResponse({"detail": str(e)}, status=500)
 
 
+# ---------------------------------------------------------------------------
+# 🧠 Requêtes NL → SQL via LLM
+# ---------------------------------------------------------------------------
+
+def get_schema(dataset: str) -> str:
+    """Récupère les noms et types de colonnes DuckDB (pour contextualiser le LLM)."""
+    if not dataset:
+        return "Aucun dataset spécifié"
+
+    try:
+        df = duckdb.query(f"DESCRIBE {dataset};").to_df()
+        if df.empty:
+            return "Aucune colonne détectée"
+        cols = [f"{row['column_name']} ({row['column_type']})" for _, row in df.iterrows()]
+        return ", ".join(cols)
+    except Exception as e:
+        logger.warning(f"Impossible de lire le schéma pour {dataset}: {e}")
+        return "Schéma non disponible"
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def query_nl(request):
     """
-    Interprète une question naturelle via n8n ou fallback interne.
+    Interprète une question naturelle via le LLM (n8n si dispo),
+    puis exécute la requête SQL générée de manière sécurisée.
     """
     try:
         data = request.data or {}
         question = (data.get("question") or "").strip()
         dataset = _normalize_dataset_name(data.get("dataset"))
+
         if not question or not dataset:
             return JsonResponse({"detail": "Champs 'question' et 'dataset' requis."}, status=400)
+
+        schema = get_schema(dataset)
+        extra = {k: v for k, v in data.items() if k not in {"question", "dataset"}}
+        extra.update({"schema": schema})
 
         payload = {}
         if n8n_is_configured():
             try:
-                payload = n8n_nl_to_sql(question, dataset, extra={k: v for k, v in data.items() if k not in {"question", "dataset"}})
+                payload = n8n_nl_to_sql(question, dataset, extra=extra)
             except Exception as e:
-                logger.warning(f"n8n error: {e}")
+                logger.warning(f"Erreur n8n: {e}")
 
-        # Exécution Python si fourni
+        # --------------------- Cas : code Python généré ---------------------
         if payload.get("code_python"):
             code = _inject_duckdb_preamble(payload["code_python"], dataset, prefer_var=dataset)
             result = run_pandas_analysis(code)
@@ -287,16 +378,19 @@ def query_nl(request):
                 "rows": result.get("rows", []),
                 "chart_spec": payload.get("chart_spec", {"type": "custom"}),
                 "summary": payload.get("summary", ""),
-                "sql": payload.get("sql")
+                "sql": payload.get("sql"),
+                "schema": schema,
             })
 
-        # SQL direct ou dérivé
+        # --------------------- Cas : SQL généré ----------------------------
         chart_spec = payload.get("chart_spec", {})
         sql = (payload.get("sql") or "").strip()
 
+        # Génération automatique selon le type de graphique
         if not sql and chart_spec:
             sql, chart_spec = _synth_sql_from_spec(dataset, chart_spec)
 
+        # Fallback : génération d’un SQL par défaut
         if not sql:
             date_col, val_col, cat_col = _infer_columns(dataset)
             plan = {
@@ -305,25 +399,51 @@ def query_nl(request):
                 "date_col": date_col,
                 "amount_col": val_col,
                 "category_col": cat_col,
-                "limit": int(data.get("limit", 1000))
+                "limit": int(data.get("limit", 1000)),
             }
             sql = build_sql_from_plan(plan)
             chart_spec = {"type": "table"}
 
-        if not is_safe(sql):
-            return JsonResponse({"detail": "SQL généré invalide."}, status=400)
+        # Validation sécurité
+        if not sql or not is_safe(sql):
+            return JsonResponse({"detail": "SQL généré invalide ou non autorisé."}, status=400)
 
+        # Exécution
         try:
             rows = run_sql_safe(sql)
         except Exception as e:
+            logger.error(f"Erreur exécution SQL ({dataset}): {e}")
             return JsonResponse({"detail": f"Exécution SQL échouée: {e}"}, status=400)
+
+                # --------------------------- RÉPONSE FINALE ----------------------------
+        # 🔹 Détection automatique d'histogramme pour les GROUP BY COUNT
+        if not chart_spec and "count(" in sql.lower() and "group by" in sql.lower():
+            # Cherche les noms de colonnes de sortie
+            first_row = rows[0] if rows else {}
+            keys = list(first_row.keys()) if first_row else []
+            if len(keys) >= 2:
+                chart_spec = {
+                    "type": "histogram",
+                    "x": keys[0],
+                    "y": keys[1],
+                }
+            else:
+                chart_spec = {"type": "histogram"}
+
+        # 🧩 Correction automatique du type de graphique avant réponse
+        chart_spec = auto_fix_chart_spec(question, chart_spec, rows)
+        print("📊 chart_spec final envoyé au frontend :", chart_spec)
 
         return JsonResponse({
             "rows": rows,
-            "chart_spec": chart_spec or {"type": "table"},
+            "chart_spec": chart_spec,
             "summary": payload.get("summary", ""),
-            "sql": sql
+            "sql": sql,
+            "schema": schema,
         })
+
+
+      
     except Exception as e:
         logger.exception("query_nl: erreur inattendue")
         return JsonResponse({"detail": f"Erreur interne: {e}"}, status=500)
