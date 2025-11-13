@@ -7,6 +7,7 @@ from rest_framework import permissions, status
 
 from .n8n import nl_to_sql, N8nError, is_configured
 
+
 class N8nHealthView(APIView):
     """Indique si l'URL n8n est configuree (ping local)."""
     permission_classes = [permissions.AllowAny]

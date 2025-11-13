@@ -14,9 +14,11 @@
     "bootstrap": "^5.3.8",
     "bootstrap-icons": "^1.13.1",
     "react": "^19.1.1",
+    "react-autosuggest": "^10.1.0",
     "react-bootstrap": "^2.10.10",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.1",
+    "react-textarea-autosize": "^8.5.9",
     "recharts": "^3.1.2"
   },
   "devDependencies": {
