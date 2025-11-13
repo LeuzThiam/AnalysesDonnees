@@ -16,6 +16,9 @@ import {
   ResponsiveContainer
 } from "recharts";
 
+
+import TextareaAutosize from "react-textarea-autosize";
+
 // ✅ Import Bootstrap et icônes
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
@@ -451,12 +454,17 @@ export default function Ask() {
             <label className="form-label fw-semibold">
               <i className="bi bi-question-circle me-1"></i> Question
             </label>
-            <input
+            
+              <TextareaAutosize
               className="form-control"
+              minRows={1}
+              maxRows={4}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="ex: évolution mensuelle du total des ventes"
             />
+
+
           </div>
 
           <div className="col-sm-3">
