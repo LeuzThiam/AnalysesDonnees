@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import re
 import logging
+from math import isnan
+
+import duckdb
+import numpy as np
 import pandas as pd
 from django.conf import settings
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
-import duckdb
 
 # ✅ Imports internes
 from .duck import (
@@ -108,6 +111,62 @@ _con = _ddb.connect(r'{settings.DUCKDB_PATH}')
 {left_var} = _con.execute('SELECT * FROM "{table_name}"').df()
 """
     return preamble.strip() + "\n\n" + patched.strip()
+
+
+# ---------------------------------------------------------------------------
+# ♻️ Helpers généraux de réponse/validation
+# ---------------------------------------------------------------------------
+
+
+def _json_error(detail: str, *, status: int = 400, code: str | None = None, extra: dict | None = None) -> JsonResponse:
+    payload = {"detail": detail}
+    if code:
+        payload["code"] = code
+    if extra:
+        payload.update(extra)
+    return JsonResponse(payload, status=status)
+
+
+def _dataset_exists(name: str) -> bool:
+    if not name:
+        return False
+    try:
+        tables = list_tables()
+        return any(table.lower() == name.lower() for table in tables)
+    except duckdb.Error:
+        logger.exception("Impossible de vérifier l'existence du dataset %s", name)
+        return False
+
+
+def _safe_limit(raw_limit: str | int | None, *, default: int = 10, max_value: int = 1000) -> int:
+    try:
+        limit = int(raw_limit) if raw_limit is not None else default
+    except (TypeError, ValueError):
+        raise ValueError("Paramètre 'limit' invalide")
+    return max(1, min(limit, max_value))
+
+
+def _to_serializable(value):
+    if value is None:
+        return None
+    if isinstance(value, (np.generic,)):
+        return value.item()
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return value.isoformat()
+    if isinstance(value, float) and isnan(value):
+        return None
+    return value
+
+
+def _frame_to_records(df: pd.DataFrame, *, limit: int | None = None) -> list[dict]:
+    sample = df.head(limit) if limit is not None else df
+    if sample.empty:
+        return []
+    serialised = sample.where(pd.notnull(sample), None)
+    return [
+        {k: _to_serializable(v) for k, v in row.items()}
+        for row in serialised.to_dict(orient="records")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +326,7 @@ def upload_dataset(request):
     try:
         upfile = request.FILES.get("file")
         if not upfile:
-            return JsonResponse({"detail": "Champ 'file' requis."}, status=400)
+            return _json_error("Champ 'file' requis.")
 
         dataset = _normalize_dataset_name(request.data.get("dataset") or os.path.splitext(upfile.name)[0])
         ext = (upfile.name or "").lower().rsplit(".", 1)[-1]
@@ -276,11 +335,11 @@ def upload_dataset(request):
             info = load_to_duckdb(upfile, dataset, file_type=ext if ext != "xls" else "excel")
             return JsonResponse({"ok": True, "table": dataset, **info}, status=201)
 
-        return JsonResponse({"detail": "Format non supporté (CSV, XLSX, JSON, Parquet)."}, status=400)
+        return _json_error("Format non supporté (CSV, XLSX, JSON, Parquet).")
 
     except Exception as e:
         logger.exception("upload_dataset: erreur inattendue")
-        return JsonResponse({"detail": f"Echec import: {e}"}, status=500)
+        return _json_error(f"Echec import: {e}", status=500)
 
 
 @api_view(["GET"])
@@ -290,19 +349,108 @@ def datasets_list(request):
         return JsonResponse({"tables": list_tables()})
     except Exception as e:
         logger.exception("datasets_list: erreur inattendue")
-        return JsonResponse({"detail": str(e)}, status=500)
+        return _json_error(str(e), status=500)
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def datasets_preview(request, table: str):
     try:
-        limit = max(1, min(int(request.GET.get("limit", 10)), 1000))
+        try:
+            limit = _safe_limit(request.GET.get("limit"), default=10)
+        except ValueError as exc:
+            return _json_error(str(exc))
+
+        if not _dataset_exists(table):
+            return _json_error(f"Dataset '{table}' introuvable.", status=404, code="dataset_not_found")
+
         info = profile_table(table, limit=limit)
         return JsonResponse({"table": table, **info})
     except Exception as e:
         logger.exception("datasets_preview: erreur inattendue")
-        return JsonResponse({"detail": str(e)}, status=500)
+        return _json_error(str(e), status=500)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def datasets_insights(request, table: str):
+    """Fournit des statistiques descriptives et corrélations clés pour un dataset."""
+    try:
+        if not _dataset_exists(table):
+            return _json_error(f"Dataset '{table}' introuvable.", status=404, code="dataset_not_found")
+
+        try:
+            sample_limit = _safe_limit(request.GET.get("sample"), default=500, max_value=5000)
+        except ValueError as exc:
+            return _json_error(str(exc))
+
+        try:
+            df = duckdb.sql(f'SELECT * FROM "{table}" LIMIT {sample_limit}').to_df()
+        except duckdb.Error as exc:
+            logger.warning("datasets_insights: lecture du dataset %s impossible: %s", table, exc)
+            return _json_error(f"Impossible de lire le dataset '{table}'.", status=500)
+
+        if df.empty:
+            return JsonResponse(
+                {
+                    "table": table,
+                    "rows_sampled": 0,
+                    "fields": {},
+                    "summary": [],
+                    "missing_values": {},
+                    "correlations": [],
+                }
+            )
+
+        try:
+            summary_df = df.describe(include="all", datetime_is_numeric=True)
+        except TypeError:
+            summary_df = df.describe(include="all")
+        summary_df = summary_df.transpose().reset_index()
+        summary_df = summary_df.rename(columns={"index": "field"})
+        summary = [
+            {k: _to_serializable(v) for k, v in row.items()}
+            for row in summary_df.where(pd.notnull(summary_df), None).to_dict(orient="records")
+        ]
+
+        missing_values = {
+            column: _to_serializable(int(count))
+            for column, count in df.isna().sum().to_dict().items()
+        }
+
+        numeric_df = df.select_dtypes(include=[np.number])
+        correlations: list[dict] = []
+        if not numeric_df.empty and numeric_df.shape[1] > 1:
+            corr_matrix = numeric_df.corr()
+            for i, col_i in enumerate(corr_matrix.columns):
+                for j in range(i + 1, len(corr_matrix.columns)):
+                    value = corr_matrix.iloc[i, j]
+                    correlations.append(
+                        {
+                            "feature_1": col_i,
+                            "feature_2": corr_matrix.columns[j],
+                            "correlation": _to_serializable(value),
+                        }
+                    )
+            correlations.sort(
+                key=lambda item: abs(item["correlation"]) if item["correlation"] is not None else -1,
+                reverse=True,
+            )
+
+        response = {
+            "table": table,
+            "rows_sampled": len(df),
+            "fields": {col: str(dtype) for col, dtype in df.dtypes.items()},
+            "summary": summary,
+            "missing_values": missing_values,
+            "correlations": correlations[:50],
+            "sample": _frame_to_records(df, limit=50),
+        }
+
+        return JsonResponse(response)
+    except Exception as exc:
+        logger.exception("datasets_insights: erreur inattendue")
+        return _json_error(f"Erreur interne: {exc}", status=500)
 
 
 @api_view(["POST"])
@@ -312,16 +460,19 @@ def query_sql(request):
     try:
         sql = (request.data.get("sql") or "").strip()
         if not sql:
-            return JsonResponse({"detail": "Champ 'sql' requis."}, status=400)
+            return _json_error("Champ 'sql' requis.")
 
         if not is_safe(sql):
-            return JsonResponse({"detail": "Requête SQL non autorisée."}, status=400)
+            return _json_error("Requête SQL non autorisée.")
 
         rows = run_sql_safe(sql)
         return JsonResponse({"rows": rows})
+    except duckdb.CatalogException as exc:
+        logger.warning("query_sql: dataset introuvable: %s", exc)
+        return _json_error("Dataset introuvable dans la requête.", status=404, code="dataset_not_found")
     except Exception as e:
         logger.exception("query_sql: erreur inattendue")
-        return JsonResponse({"detail": str(e)}, status=500)
+        return _json_error(str(e), status=500)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +508,10 @@ def query_nl(request):
         dataset = _normalize_dataset_name(data.get("dataset"))
 
         if not question or not dataset:
-            return JsonResponse({"detail": "Champs 'question' et 'dataset' requis."}, status=400)
+            return _json_error("Champs 'question' et 'dataset' requis.")
+
+        if not _dataset_exists(dataset):
+            return _json_error(f"Dataset '{dataset}' introuvable.", status=404, code="dataset_not_found")
 
         schema = get_schema(dataset)
         extra = {k: v for k, v in data.items() if k not in {"question", "dataset"}}
@@ -406,14 +560,14 @@ def query_nl(request):
 
         # Validation sécurité
         if not sql or not is_safe(sql):
-            return JsonResponse({"detail": "SQL généré invalide ou non autorisé."}, status=400)
+            return _json_error("SQL généré invalide ou non autorisé.")
 
         # Exécution
         try:
             rows = run_sql_safe(sql)
         except Exception as e:
             logger.error(f"Erreur exécution SQL ({dataset}): {e}")
-            return JsonResponse({"detail": f"Exécution SQL échouée: {e}"}, status=400)
+            return _json_error(f"Exécution SQL échouée: {e}")
 
                 # --------------------------- RÉPONSE FINALE ----------------------------
         # 🔹 Détection automatique d'histogramme pour les GROUP BY COUNT
@@ -443,7 +597,7 @@ def query_nl(request):
         })
 
 
-      
+
     except Exception as e:
         logger.exception("query_nl: erreur inattendue")
-        return JsonResponse({"detail": f"Erreur interne: {e}"}, status=500)
+        return _json_error(f"Erreur interne: {e}", status=500)
