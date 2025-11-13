@@ -16,6 +16,9 @@ import {
   ResponsiveContainer
 } from "recharts";
 
+
+import TextareaAutosize from "react-textarea-autosize";
+
 // ✅ Import Bootstrap et icônes
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
@@ -386,6 +389,8 @@ export default function Ask() {
   const [resultText, setResultText] = useState("");
   const [stdout, setStdout] = useState("");
   const [suggestions, setSuggestions] = useState([]);
+  const [analysis, setAnalysis] = useState("");
+
 
   useEffect(() => {
     (async () => {
@@ -454,6 +459,7 @@ export default function Ask() {
         limit: Math.round(limitValue),
       };
       const data = await unwrap(api.post("/analytics/query/nl", payload));
+      setAnalysis(data.analysis || "");
 
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setChart(typeof data.chart === "string" ? data.chart : "");
@@ -517,12 +523,17 @@ export default function Ask() {
             <label className="form-label fw-semibold">
               <i className="bi bi-question-circle me-1"></i> Question
             </label>
-            <input
+            
+              <TextareaAutosize
               className="form-control"
+              minRows={1}
+              maxRows={4}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="ex: évolution mensuelle du total des ventes"
             />
+
+
           </div>
 
           <div className="col-sm-3">
@@ -579,6 +590,13 @@ export default function Ask() {
 
       {error && <div className="alert alert-danger mt-3">{error}</div>}
       {summary && <div className="alert alert-info mt-3 shadow-sm">{summary}</div>}
+      {analysis && (
+        <div className="alert alert-success mt-3 shadow-sm">
+          <h6 className="fw-bold mb-2"><i className="bi bi-lightbulb me-1"></i> Analyse automatique</h6>
+          <p className="mb-0">{analysis}</p>
+        </div>
+      )}
+
 
       {sql && (
         <details className="mt-3">
