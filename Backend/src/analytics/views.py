@@ -133,8 +133,11 @@ def _dataset_exists(name: str) -> bool:
     if not name:
         return False
     try:
-        tables = list_tables()
-        return any(table.lower() == name.lower() for table in tables)
+        result = duckdb.sql(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = LOWER(?)",
+            [name],
+        ).fetchone()
+        return bool(result and result[0])
     except duckdb.Error:
         logger.exception("Impossible de vérifier l'existence du dataset %s", name)
         return False
@@ -578,6 +581,9 @@ def query_nl(request):
         if not _dataset_exists(dataset):
             return _json_error(f"Dataset '{dataset}' introuvable.", status=404, code="dataset_not_found")
 
+        if not _dataset_exists(dataset):
+            return _json_error(f"Dataset '{dataset}' introuvable.", status=404, code="dataset_not_found")
+
         # 1) Schéma pour contextualiser
         schema = get_schema(dataset)
         extra = {k: v for k, v in data.items() if k not in {"question", "dataset"}}
@@ -647,6 +653,21 @@ def query_nl(request):
         except Exception as e:
             logger.error(f"Erreur exécution SQL ({dataset}): {e}")
             return _json_error(f"Exécution SQL échouée: {e}")
+
+                # --------------------------- RÉPONSE FINALE ----------------------------
+        # 🔹 Détection automatique d'histogramme pour les GROUP BY COUNT
+        if not chart_spec and "count(" in sql.lower() and "group by" in sql.lower():
+            # Cherche les noms de colonnes de sortie
+            first_row = rows[0] if rows else {}
+            keys = list(first_row.keys()) if first_row else []
+            if len(keys) >= 2:
+                chart_spec = {
+                    "type": "histogram",
+                    "x": keys[0],
+                    "y": keys[1],
+                }
+            else:
+                chart_spec = {"type": "histogram"}
 
         # 6) Fix chart + analyse locale / n8n
         chart_spec = auto_fix_chart_spec(question, chart_spec, rows)
