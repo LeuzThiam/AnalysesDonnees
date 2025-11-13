@@ -36,6 +36,73 @@ function inferIntent(q = "") {
 }
 
 /* ============================================================
+   🛡️ Centralisation des messages d'erreur
+   ============================================================ */
+function extractApiMessage(apiErr) {
+  if (!apiErr) return "";
+  if (typeof apiErr === "string") return apiErr;
+  if (typeof apiErr.detail === "string") return apiErr.detail;
+  if (Array.isArray(apiErr.detail)) {
+    // FastAPI retourne parfois un tableau d'erreurs de validation
+    const firstDetail = apiErr.detail.find((d) => typeof d?.msg === "string");
+    if (firstDetail) return firstDetail.msg;
+  }
+  if (typeof apiErr.error === "string") return apiErr.error;
+  if (typeof apiErr.message === "string") return apiErr.message;
+  return "";
+}
+
+function buildErrorMessage(ex, { dataset }) {
+  if (!ex) return "Une erreur inconnue est survenue.";
+
+  // Axios : réponse disponible
+  if (ex.response) {
+    const { status, data } = ex.response;
+    const apiMessage = extractApiMessage(data);
+
+    if (status === 404 || /does not exist/i.test(apiMessage)) {
+      return `Le dataset "${dataset}" est introuvable ou inaccessible.`;
+    }
+
+    if (status === 400 || status === 422) {
+      return apiMessage
+        ? `Requête invalide : ${apiMessage}`
+        : "La requête semble invalide. Vérifiez la question ou les paramètres.";
+    }
+
+    if (status === 401 || status === 403) {
+      return "Accès refusé : vous n'avez pas les autorisations nécessaires pour cette ressource.";
+    }
+
+    if (status === 429) {
+      return "Trop de requêtes ont été envoyées sur une courte période. Patientez avant de réessayer.";
+    }
+
+    if (status >= 500) {
+      return apiMessage
+        ? `Le serveur a rencontré une erreur (${status}) : ${apiMessage}`
+        : "Le serveur a rencontré une erreur inattendue. Réessayez plus tard.";
+    }
+
+    return apiMessage || "Une erreur est survenue lors de l'appel au service distant.";
+  }
+
+  // Axios : requête envoyée mais aucune réponse (timeout, réseau...)
+  if (ex.request) {
+    return "Le serveur n'a pas répondu. Vérifiez votre connexion Internet ou réessayez plus tard.";
+  }
+
+  if (typeof ex.message === "string" && ex.message.trim().length > 0) {
+    if (/network error/i.test(ex.message)) {
+      return "Erreur réseau : impossible de contacter le serveur. Assurez-vous d'être connecté.";
+    }
+    return ex.message;
+  }
+
+  return "Erreur inconnue.";
+}
+
+/* ============================================================
    🎨 ChartRenderer universel (Recharts + Base64 PNG)
    ============================================================ */
 function ChartRenderer({ rows = [], spec, base64 }) {
@@ -335,6 +402,10 @@ export default function Ask() {
         }
       } catch (err) {
         console.warn("Impossible de charger les datasets :", err);
+        setError((prev) =>
+          prev ||
+          "Impossible de charger la liste des datasets. Vérifiez votre connexion ou l'état du serveur."
+        );
       }
     })();
   }, []);
@@ -365,8 +436,15 @@ export default function Ask() {
 
     const ds = dataset.trim();
     const q = question.trim();
+    const limitValue = Number(limit);
+
     if (!ds || !q) {
-      setError("Dataset et question requis.");
+      setError("Le dataset et la question sont obligatoires pour lancer l'analyse.");
+      return;
+    }
+
+    if (!Number.isFinite(limitValue) || limitValue <= 0) {
+      setError("La limite de lignes doit être un nombre positif.");
       return;
     }
 
@@ -378,7 +456,7 @@ export default function Ask() {
         dataset: ds,
         question: q,
         intent: chosenIntent,
-        limit: Number(limit) > 0 ? Number(limit) : 1000,
+        limit: Math.round(limitValue),
       };
       const data = await unwrap(api.post("/analytics/query/nl", payload));
       setAnalysis(data.analysis || "");
@@ -397,17 +475,8 @@ export default function Ask() {
       );
       setStdout(typeof data.stdout === "string" ? data.stdout : "");
     } catch (ex) {
-      const apiErr = ex?.response?.data;
-      let msg =
-        (typeof apiErr === "string" && apiErr) ||
-        apiErr?.detail ||
-        apiErr?.error ||
-        apiErr?.message ||
-        ex?.message ||
-        "Erreur inconnue.";
-      if (/does not exist/i.test(msg))
-        msg = `Le dataset "${dataset}" n'existe pas dans la base.`;
-      setError(msg);
+      const friendlyMessage = buildErrorMessage(ex, { dataset: ds });
+      setError(friendlyMessage);
     } finally {
       setBusy(false);
     }
