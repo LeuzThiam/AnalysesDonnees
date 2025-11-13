@@ -23,6 +23,8 @@ from .services.guards import is_safe
 from .services.runners import run_sql_safe
 from .services.planner import build_sql_from_plan
 from integrations.n8n import nl_to_sql as n8n_nl_to_sql, is_configured as n8n_is_configured
+from integrations.n8n_analysis import analyze_result, is_configured as analysis_is_configured
+
 from .services.pandas_runner import run_pandas_analysis
 
 # ============================================================
@@ -342,14 +344,77 @@ def get_schema(dataset: str) -> str:
     except Exception as e:
         logger.warning(f"Impossible de lire le schéma pour {dataset}: {e}")
         return "Schéma non disponible"
+    
+
+import numpy as np
+
+def auto_analyze_result(rows: list[dict], chart_spec: dict, question: str) -> str:
+    """
+    Génère une interprétation automatique simple selon les résultats.
+    """
+    if not rows or not isinstance(rows, list) or len(rows) == 0:
+        return "Aucune donnée à analyser."
+
+    # On essaie d’identifier les colonnes numériques et catégorielles
+    first_row = rows[0]
+    keys = list(first_row.keys())
+    if len(keys) < 2:
+        return "Résultat trop simple pour une analyse automatique."
+
+    x_key = chart_spec.get("x", keys[0])
+    y_key = chart_spec.get("y", keys[1])
+    try:
+        y_values = [float(r[y_key]) for r in rows if r.get(y_key) is not None]
+    except Exception:
+        return "Impossible d’interpréter les valeurs numériques."
+
+    # Statistiques de base
+    n = len(y_values)
+    mean_val = np.mean(y_values)
+    median_val = np.median(y_values)
+    min_val = np.min(y_values)
+    max_val = np.max(y_values)
+    amplitude = max_val - min_val
+
+    # Génération d’une analyse textuelle
+    analysis = []
+
+    # Type détecté
+    typ = (chart_spec.get("type") or "").lower()
+
+    if typ in ["line", "timeseries", "area"]:
+        analysis.append(f"Les données présentent une évolution sur {n} points.")
+        if y_values[-1] > y_values[0]:
+            analysis.append("La tendance générale est à la hausse 📈.")
+        elif y_values[-1] < y_values[0]:
+            analysis.append("La tendance générale est à la baisse 📉.")
+        else:
+            analysis.append("La tendance reste stable sur la période.")
+    elif typ in ["bar", "pie", "histogram", "stacked_bar"]:
+        max_row = max(rows, key=lambda r: r[y_key])
+        min_row = min(rows, key=lambda r: r[y_key])
+        analysis.append(f"La catégorie '{max_row[x_key]}' a la valeur la plus élevée ({max_row[y_key]:.2f}).")
+        analysis.append(f"La catégorie '{min_row[x_key]}' est la plus faible ({min_row[y_key]:.2f}).")
+        if amplitude / mean_val > 0.5:
+            analysis.append("La variation entre catégories est importante.")
+        else:
+            analysis.append("Les valeurs sont relativement homogènes entre catégories.")
+    else:
+        analysis.append("Les résultats sont affichés sous forme tabulaire. Consultez les valeurs clés ci-dessus.")
+
+    analysis.append(f"Valeur moyenne : {mean_val:.2f}, médiane : {median_val:.2f}, min : {min_val:.2f}, max : {max_val:.2f}.")
+    return " ".join(analysis)
+
+
+
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def query_nl(request):
     """
-    Interprète une question naturelle via le LLM (n8n si dispo),
-    puis exécute la requête SQL générée de manière sécurisée.
+    NL → (n8n) → SQL/plan → exécution sécurisée → (optionnel) analyse experte n8n
+    avec fallback local si n8n indisponible.
     """
     try:
         data = request.data or {}
@@ -359,38 +424,53 @@ def query_nl(request):
         if not question or not dataset:
             return JsonResponse({"detail": "Champs 'question' et 'dataset' requis."}, status=400)
 
+        # 1) Schéma pour contextualiser
         schema = get_schema(dataset)
         extra = {k: v for k, v in data.items() if k not in {"question", "dataset"}}
         extra.update({"schema": schema})
 
+        # 2) NL→SQL via n8n (si dispo)
         payload = {}
         if n8n_is_configured():
             try:
                 payload = n8n_nl_to_sql(question, dataset, extra=extra)
             except Exception as e:
-                logger.warning(f"Erreur n8n: {e}")
+                logger.warning(f"Erreur n8n (NL→SQL): {e}")
 
-        # --------------------- Cas : code Python généré ---------------------
+        # 3) Cas code Python généré
         if payload.get("code_python"):
             code = _inject_duckdb_preamble(payload["code_python"], dataset, prefer_var=dataset)
             result = run_pandas_analysis(code)
+            rows = result.get("rows", [])
+            chart_spec = payload.get("chart_spec", {"type": "custom"})
+            # Analyse experte (optionnelle) + fallback local
+            analysis_text = ""
+            if analysis_is_configured():
+                try:
+                    n8n_out = analyze_result(question, rows, chart_spec)
+                    analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
+                except Exception as e:
+                    logger.warning(f"Analyse n8n échouée: {e}")
+                    analysis_text = auto_analyze_result(rows, chart_spec, question)
+            else:
+                analysis_text = auto_analyze_result(rows, chart_spec, question)
+
             return JsonResponse({
-                "rows": result.get("rows", []),
-                "chart_spec": payload.get("chart_spec", {"type": "custom"}),
-                "summary": payload.get("summary", ""),
+                "rows": rows,
+                "chart_spec": chart_spec,
+                "summary": (payload.get("summary") or "Analyse automatique générée.")
+                           + (f"\n\n💡 Analyse experte (n8n) : {analysis_text}" if analysis_text else ""),
                 "sql": payload.get("sql"),
                 "schema": schema,
             })
 
-        # --------------------- Cas : SQL généré ----------------------------
-        chart_spec = payload.get("chart_spec", {})
+        # 4) Cas SQL généré (ou synthèse depuis chart_spec / plan)
+        chart_spec = payload.get("chart_spec", {}) or {}
         sql = (payload.get("sql") or "").strip()
 
-        # Génération automatique selon le type de graphique
         if not sql and chart_spec:
             sql, chart_spec = _synth_sql_from_spec(dataset, chart_spec)
 
-        # Fallback : génération d’un SQL par défaut
         if not sql:
             date_col, val_col, cat_col = _infer_columns(dataset)
             plan = {
@@ -404,46 +484,42 @@ def query_nl(request):
             sql = build_sql_from_plan(plan)
             chart_spec = {"type": "table"}
 
-        # Validation sécurité
+        # 5) Sécurité puis exécution
         if not sql or not is_safe(sql):
             return JsonResponse({"detail": "SQL généré invalide ou non autorisé."}, status=400)
 
-        # Exécution
         try:
             rows = run_sql_safe(sql)
         except Exception as e:
             logger.error(f"Erreur exécution SQL ({dataset}): {e}")
             return JsonResponse({"detail": f"Exécution SQL échouée: {e}"}, status=400)
 
-                # --------------------------- RÉPONSE FINALE ----------------------------
-        # 🔹 Détection automatique d'histogramme pour les GROUP BY COUNT
-        if not chart_spec and "count(" in sql.lower() and "group by" in sql.lower():
-            # Cherche les noms de colonnes de sortie
-            first_row = rows[0] if rows else {}
-            keys = list(first_row.keys()) if first_row else []
-            if len(keys) >= 2:
-                chart_spec = {
-                    "type": "histogram",
-                    "x": keys[0],
-                    "y": keys[1],
-                }
-            else:
-                chart_spec = {"type": "histogram"}
-
-        # 🧩 Correction automatique du type de graphique avant réponse
+        # 6) Fix chart + analyse locale / n8n
         chart_spec = auto_fix_chart_spec(question, chart_spec, rows)
-        print("📊 chart_spec final envoyé au frontend :", chart_spec)
+
+        analysis_text = ""
+        if analysis_is_configured():
+            try:
+                n8n_out = analyze_result(question, rows, chart_spec)
+                analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
+            except Exception as e:
+                logger.warning(f"Analyse n8n échouée: {e}")
+                analysis_text = auto_analyze_result(rows, chart_spec, question)
+        else:
+            analysis_text = auto_analyze_result(rows, chart_spec, question)
+
+        combined_summary = payload.get("summary") or "Analyse automatique générée."
+        if analysis_text:
+            combined_summary += f"\n\n💡 Analyse experte : {analysis_text}"
 
         return JsonResponse({
             "rows": rows,
             "chart_spec": chart_spec,
-            "summary": payload.get("summary", ""),
+            "summary": combined_summary,
             "sql": sql,
             "schema": schema,
         })
 
-
-      
     except Exception as e:
         logger.exception("query_nl: erreur inattendue")
         return JsonResponse({"detail": f"Erreur interne: {e}"}, status=500)
