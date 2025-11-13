@@ -3,25 +3,15 @@ import { useSearchParams } from "react-router-dom";
 import api, { unwrap } from "../api/client";
 import { listDatasets } from "../api";
 import DataTable from "../components/DataTable";
+
+// Recharts
 import {
-  Area, AreaChart,
-  Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
-  ComposedChart, Treemap, FunnelChart, Funnel,
-  RadialBarChart, RadialBar,
   BarChart, Bar,
   LineChart, Line,
   PieChart, Pie, Cell,
   ScatterChart, Scatter,
   CartesianGrid, XAxis, YAxis, Tooltip, Legend,
-  ResponsiveContainer
 } from "recharts";
-
-
-import TextareaAutosize from "react-textarea-autosize";
-
-// ✅ Import Bootstrap et icônes
-import "bootstrap/dist/css/bootstrap.min.css";
-import "bootstrap-icons/font/bootstrap-icons.css";
 
 /* ============================================================
    🎯 Inférence d’intention automatique selon la question
@@ -36,333 +26,107 @@ function inferIntent(q = "") {
 }
 
 /* ============================================================
-   🛡️ Centralisation des messages d'erreur
-   ============================================================ */
-function extractApiMessage(apiErr) {
-  if (!apiErr) return "";
-  if (typeof apiErr === "string") return apiErr;
-  if (typeof apiErr.detail === "string") return apiErr.detail;
-  if (Array.isArray(apiErr.detail)) {
-    // FastAPI retourne parfois un tableau d'erreurs de validation
-    const firstDetail = apiErr.detail.find((d) => typeof d?.msg === "string");
-    if (firstDetail) return firstDetail.msg;
-  }
-  if (typeof apiErr.error === "string") return apiErr.error;
-  if (typeof apiErr.message === "string") return apiErr.message;
-  return "";
-}
-
-function buildErrorMessage(ex, { dataset }) {
-  if (!ex) return "Une erreur inconnue est survenue.";
-
-  // Axios : réponse disponible
-  if (ex.response) {
-    const { status, data } = ex.response;
-    const apiMessage = extractApiMessage(data);
-
-    if (status === 404 || /does not exist/i.test(apiMessage)) {
-      return `Le dataset "${dataset}" est introuvable ou inaccessible.`;
-    }
-
-    if (status === 400 || status === 422) {
-      return apiMessage
-        ? `Requête invalide : ${apiMessage}`
-        : "La requête semble invalide. Vérifiez la question ou les paramètres.";
-    }
-
-    if (status === 401 || status === 403) {
-      return "Accès refusé : vous n'avez pas les autorisations nécessaires pour cette ressource.";
-    }
-
-    if (status === 429) {
-      return "Trop de requêtes ont été envoyées sur une courte période. Patientez avant de réessayer.";
-    }
-
-    if (status >= 500) {
-      return apiMessage
-        ? `Le serveur a rencontré une erreur (${status}) : ${apiMessage}`
-        : "Le serveur a rencontré une erreur inattendue. Réessayez plus tard.";
-    }
-
-    return apiMessage || "Une erreur est survenue lors de l'appel au service distant.";
-  }
-
-  // Axios : requête envoyée mais aucune réponse (timeout, réseau...)
-  if (ex.request) {
-    return "Le serveur n'a pas répondu. Vérifiez votre connexion Internet ou réessayez plus tard.";
-  }
-
-  if (typeof ex.message === "string" && ex.message.trim().length > 0) {
-    if (/network error/i.test(ex.message)) {
-      return "Erreur réseau : impossible de contacter le serveur. Assurez-vous d'être connecté.";
-    }
-    return ex.message;
-  }
-
-  return "Erreur inconnue.";
-}
-
-/* ============================================================
-   🎨 ChartRenderer universel (Recharts + Base64 PNG)
+   🎨 ChartRenderer universel (Recharts + PNG)
    ============================================================ */
 function ChartRenderer({ rows = [], spec, base64 }) {
   if (!spec && !base64) return null;
 
   const type = (spec?.type || spec?.mark || "").toLowerCase();
-  const xKey = spec?.x || "x";
-  const yKey = spec?.y || "y";
-
-  const colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc949"];
 
   switch (type) {
     case "bar":
     case "bar_vertical":
       return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey={yKey} fill="#4e79a7" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+        <BarChart width={700} height={400} data={rows}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={spec?.x} />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey={spec?.y} fill="#8884d8" />
+        </BarChart>
       );
 
     case "bar_horizontal":
       return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart layout="vertical" data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" />
-              <YAxis type="category" dataKey={xKey} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey={yKey} fill="#59a14f" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+        <BarChart layout="vertical" width={700} height={400} data={rows}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis type="number" />
+          <YAxis type="category" dataKey={spec?.y} />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey={spec?.x} fill="#82ca9d" />
+        </BarChart>
       );
 
     case "line":
-    case "timeseries":
       return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey={yKey} stroke="#f28e2b" strokeWidth={3} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        <LineChart width={700} height={400} data={rows}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={spec?.x} />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          <Line type="monotone" dataKey={spec?.y} stroke="#8884d8" />
+        </LineChart>
       );
 
     case "scatter":
       return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis dataKey={yKey} />
-              <Tooltip />
-              <Legend />
-              <Scatter data={rows} fill="#e15759" />
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
+        <ScatterChart width={700} height={400}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={spec?.x} />
+          <YAxis dataKey={spec?.y} />
+          <Tooltip />
+          <Legend />
+          <Scatter data={rows} fill="#8884d8" />
+        </ScatterChart>
       );
 
     case "pie":
       return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <PieChart>
-              <Pie data={rows} dataKey={yKey} nameKey={xKey} cx="50%" cy="50%" outerRadius={130} label>
-                {rows.map((_, i) => (
-                  <Cell key={i} fill={colors[i % colors.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "histogram":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={spec?.x || Object.keys(rows[0])[0]} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey={spec?.y || Object.keys(rows[0])[1]} fill="#4e79a7" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "area":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Area type="monotone" dataKey={yKey} stroke="#76b7b2" fill="#cbe4de" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "bubble":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={spec?.x || Object.keys(rows[0])[0]} />
-              <YAxis dataKey={spec?.y || Object.keys(rows[0])[1]} />
-              <Tooltip />
-              <Legend />
-              <Scatter data={rows} fill="#edc949" shape="circle" dataKey={spec?.z || Object.keys(rows[0])[2]} />
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "donut":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <PieChart>
-              <Pie data={rows} dataKey={yKey} nameKey={xKey} cx="50%" cy="50%" innerRadius={60} outerRadius={120} label>
-                {rows.map((_, i) => (
-                  <Cell key={i} fill={colors[i % colors.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "radar":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <RadarChart data={rows}>
-              <PolarGrid />
-              <PolarAngleAxis dataKey={xKey} />
-              <PolarRadiusAxis />
-              <Radar dataKey={yKey} stroke="#4e79a7" fill="#4e79a7" fillOpacity={0.6} />
-              <Legend />
-            </RadarChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "stacked_bar":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              {Array.isArray(spec?.yKeys)
-                ? spec.yKeys.map((k, i) => (
-                    <Bar key={k} dataKey={k} stackId="a" fill={colors[i % colors.length]} />
-                  ))
-                : <Bar dataKey={yKey} fill="#4e79a7" />}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "combo":
-      const y1 = spec?.yBar || yKey;
-      const y2 = spec?.yLine || spec?.y2;
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <ComposedChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey={y1} fill="#76b7b2" />
-              {y2 && <Line type="monotone" dataKey={y2} stroke="#e15759" />}
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "radial_bar":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <RadialBarChart cx="50%" cy="50%" innerRadius="10%" outerRadius="100%" data={rows}>
-              <RadialBar dataKey={yKey} label={{ position: "insideStart", fill: "#fff" }} fill="#59a14f" />
-              <Legend />
-            </RadialBarChart>
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "treemap":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <Treemap data={rows} dataKey={yKey} nameKey={xKey} stroke="#fff" fill="#76b7b2" />
-          </ResponsiveContainer>
-        </div>
-      );
-
-    case "funnel":
-      return (
-        <div className="chart-container">
-          <ResponsiveContainer width="100%" height={400}>
-            <FunnelChart>
-              <Tooltip />
-              <Legend />
-              <Funnel dataKey={yKey} data={rows} />
-            </FunnelChart>
-          </ResponsiveContainer>
-        </div>
+        <PieChart width={400} height={400}>
+          <Pie
+            data={rows}
+            dataKey={spec?.y}
+            nameKey={spec?.x}
+            cx="50%"
+            cy="50%"
+            outerRadius={120}
+            label
+          >
+            {rows.map((_, i) => (
+              <Cell
+                key={i}
+                fill={["#8884d8", "#82ca9d", "#ffc658", "#ff8042"][i % 4]}
+              />
+            ))}
+          </Pie>
+          <Tooltip />
+        </PieChart>
       );
 
     default:
       if (base64) {
         return (
-          <div className="chart-container text-center">
-            <img alt="Graphique" src={`data:image/png;base64,${base64}`} className="chart-image img-fluid rounded shadow-sm" />
+          <div className="mt-3">
+            <img
+              alt="chart"
+              src={`data:image/png;base64,${base64}`}
+              style={{
+                maxWidth: "100%",
+                height: "auto",
+                border: "1px solid #eee",
+                borderRadius: "6px",
+              }}
+            />
           </div>
         );
       }
-
       return (
         <div className="alert alert-secondary mt-3">
-          Type de graphique non pris en charge : <code>{type || "inconnu"}</code>
+          Type de graphique non encore pris en charge :
+          <code>{type || "inconnu"}</code>
         </div>
       );
   }
@@ -379,8 +143,10 @@ export default function Ask() {
   const [question, setQuestion] = useState("");
   const [intent, setIntent] = useState("auto");
   const [limit, setLimit] = useState(1000);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
   const [rows, setRows] = useState([]);
   const [chart, setChart] = useState("");
   const [chartSpec, setChartSpec] = useState(null);
@@ -389,8 +155,6 @@ export default function Ask() {
   const [resultText, setResultText] = useState("");
   const [stdout, setStdout] = useState("");
   const [suggestions, setSuggestions] = useState([]);
-  const [analysis, setAnalysis] = useState("");
-
 
   useEffect(() => {
     (async () => {
@@ -402,10 +166,6 @@ export default function Ask() {
         }
       } catch (err) {
         console.warn("Impossible de charger les datasets :", err);
-        setError((prev) =>
-          prev ||
-          "Impossible de charger la liste des datasets. Vérifiez votre connexion ou l'état du serveur."
-        );
       }
     })();
   }, []);
@@ -436,15 +196,8 @@ export default function Ask() {
 
     const ds = dataset.trim();
     const q = question.trim();
-    const limitValue = Number(limit);
-
     if (!ds || !q) {
-      setError("Le dataset et la question sont obligatoires pour lancer l'analyse.");
-      return;
-    }
-
-    if (!Number.isFinite(limitValue) || limitValue <= 0) {
-      setError("La limite de lignes doit être un nombre positif.");
+      setError("Dataset et question requis.");
       return;
     }
 
@@ -456,10 +209,9 @@ export default function Ask() {
         dataset: ds,
         question: q,
         intent: chosenIntent,
-        limit: Math.round(limitValue),
+        limit: Number(limit) > 0 ? Number(limit) : 1000,
       };
       const data = await unwrap(api.post("/analytics/query/nl", payload));
-      setAnalysis(data.analysis || "");
 
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setChart(typeof data.chart === "string" ? data.chart : "");
@@ -475,8 +227,17 @@ export default function Ask() {
       );
       setStdout(typeof data.stdout === "string" ? data.stdout : "");
     } catch (ex) {
-      const friendlyMessage = buildErrorMessage(ex, { dataset: ds });
-      setError(friendlyMessage);
+      const apiErr = ex?.response?.data;
+      let msg =
+        (typeof apiErr === "string" && apiErr) ||
+        apiErr?.detail ||
+        apiErr?.error ||
+        apiErr?.message ||
+        ex?.message ||
+        "Erreur inconnue.";
+      if (/does not exist/i.test(msg))
+        msg = `Le dataset "${dataset}" n'existe pas dans la base.`;
+      setError(msg);
     } finally {
       setBusy(false);
     }
@@ -492,136 +253,98 @@ export default function Ask() {
     !!chartSpec;
 
   return (
-    <div className="ask-wrapper container py-4">
-      <h3 className="ask-title mb-4 text-center text-primary fw-bold">
-        <i className="bi bi-search me-2"></i>
-        Analyse de données interactive
-      </h3>
+    <div className="container py-3">
+      <h3>Poser une question</h3>
 
-      <form onSubmit={onAsk} className="ask-form card p-4 shadow-sm border-0">
-        <div className="row g-3 align-items-end">
-          <div className="col-sm-4">
-            <label className="form-label fw-semibold">
-              <i className="bi bi-folder2-open me-1"></i> Dataset (table)
-            </label>
-            <input
-              className="form-control"
-              list="datasets-list"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}
-              placeholder="ex: ventes_2025"
-              autoComplete="off"
-            />
-            <datalist id="datasets-list">
-              {suggestions.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          </div>
+      <form onSubmit={onAsk} className="row g-3 align-items-end">
+        <div className="col-sm-4">
+          <label className="form-label">Dataset (table)</label>
+          <input
+            className="form-control"
+            list="datasets-list"
+            value={dataset}
+            onChange={(e) => setDataset(e.target.value)}
+            placeholder="ex: ventes_2025"
+            autoComplete="off"
+          />
+          <datalist id="datasets-list">
+            {suggestions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        </div>
 
-          <div className="col-sm-5">
-            <label className="form-label fw-semibold">
-              <i className="bi bi-question-circle me-1"></i> Question
-            </label>
-            
-              <TextareaAutosize
-              className="form-control"
-              minRows={1}
-              maxRows={4}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="ex: évolution mensuelle du total des ventes"
-            />
+        <div className="col-sm-5">
+          <label className="form-label">Question</label>
+          <input
+            className="form-control"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="ex: Evolution journalière du total"
+          />
+        </div>
 
-
-          </div>
-
-          <div className="col-sm-3">
-            <div className="row g-2">
-              <div className="col-7">
-                <label className="form-label fw-semibold">
-                  <i className="bi bi-bullseye me-1"></i> Intent
-                </label>
-                <select
-                  className="form-select"
-                  value={intent}
-                  onChange={(e) => setIntent(e.target.value)}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="timeseries_total">Timeseries total</option>
-                  <option value="top_total">Top total</option>
-                  <option value="top_growth">Top croissance</option>
-                  <option value="anomaly_zscore">Anomalies (z-score)</option>
-                </select>
-              </div>
-              <div className="col-5">
-                <label className="form-label fw-semibold">
-                  <i className="bi bi-hash me-1"></i> Limit
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  className="form-control"
-                  value={limit}
-                  onChange={(e) => setLimit(e.target.value)}
-                />
-              </div>
+        <div className="col-sm-3">
+          <div className="row g-2">
+            <div className="col-7">
+              <label className="form-label">Intent</label>
+              <select
+                className="form-select"
+                value={intent}
+                onChange={(e) => setIntent(e.target.value)}
+              >
+                <option value="auto">Auto</option>
+                <option value="timeseries_total">Timeseries total</option>
+                <option value="top_total">Top total</option>
+                <option value="top_growth">Top croissance</option>
+                <option value="anomaly_zscore">Anomalies (z-score)</option>
+              </select>
+            </div>
+            <div className="col-5">
+              <label className="form-label">Limit</label>
+              <input
+                type="number"
+                min={1}
+                className="form-control"
+                value={limit}
+                onChange={(e) => setLimit(e.target.value)}
+              />
             </div>
           </div>
+        </div>
 
-          <div className="col-12 text-center mt-3">
-            <button
-              className="btn btn-primary btn-lg shadow rounded-pill px-4"
-              disabled={!canSubmit}
-            >
-              {busy ? (
-                <>
-                  <i className="bi bi-hourglass-split me-2"></i>Analyse en cours…
-                </>
-              ) : (
-                <>
-                  <i className="bi bi-rocket-takeoff me-2"></i>Lancer l’analyse
-                </>
-              )}
-            </button>
-          </div>
+        <div className="col-12">
+          <button className="btn btn-primary" disabled={!canSubmit}>
+            {busy ? "Analyse en cours…" : "Analyser"}
+          </button>
         </div>
       </form>
 
       {error && <div className="alert alert-danger mt-3">{error}</div>}
-      {summary && <div className="alert alert-info mt-3 shadow-sm">{summary}</div>}
-      {analysis && (
-        <div className="alert alert-success mt-3 shadow-sm">
-          <h6 className="fw-bold mb-2"><i className="bi bi-lightbulb me-1"></i> Analyse automatique</h6>
-          <p className="mb-0">{analysis}</p>
-        </div>
-      )}
-
+      {summary && <div className="alert alert-info mt-3">{summary}</div>}
 
       {sql && (
         <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-code-slash me-2"></i> SQL généré
-          </summary>
+          <summary className="fw-semibold">SQL généré</summary>
           <pre className="bg-light p-2 mb-0">
             <code>{sql}</code>
           </pre>
         </details>
       )}
 
-      {(chartSpec || chart) && <ChartRenderer rows={rows || []} spec={chartSpec} base64={chart} />}
+      {(chartSpec || chart) && (
+        <ChartRenderer rows={rows || []} spec={chartSpec} base64={chart} />
+      )}
 
       {rows?.length > 0 && (
-        <div className="mt-4">
+        <div className="mt-3">
           <DataTable rows={rows} />
         </div>
       )}
 
       {resultText && (
         <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-bar-chart-line me-2"></i> Résultat
-          </summary>
+          <summary className="fw-semibold">Résultat</summary>
           <pre className="bg-light p-2 mb-0">
             <code>{resultText}</code>
           </pre>
@@ -630,9 +353,7 @@ export default function Ask() {
 
       {stdout && (
         <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-terminal me-2"></i> Sortie (stdout)
-          </summary>
+          <summary className="fw-semibold">Sortie (stdout)</summary>
           <pre className="bg-light p-2 mb-0">
             <code>{stdout}</code>
           </pre>
@@ -640,9 +361,7 @@ export default function Ask() {
       )}
 
       {!busy && !error && !hasAnyResult && (
-        <div className="text-muted text-center mt-4">
-          <i className="bi bi-clipboard-data me-2"></i>Aucun résultat pour l’instant.
-        </div>
+        <div className="text-muted mt-3">Aucun résultat pour l’instant.</div>
       )}
     </div>
   );

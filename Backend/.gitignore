@@ -48,6 +48,3 @@ build/
 
 # Docker
 *.pid
-
-# Bases de données DuckDB
-*.duckdb

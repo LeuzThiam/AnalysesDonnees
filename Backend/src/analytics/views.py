@@ -3,16 +3,13 @@ from __future__ import annotations
 import os
 import re
 import logging
-from math import isnan
-
-import duckdb
-import numpy as np
 import pandas as pd
 from django.conf import settings
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
+import duckdb
 
 # ✅ Imports internes
 from .duck import (
@@ -26,8 +23,6 @@ from .services.guards import is_safe
 from .services.runners import run_sql_safe
 from .services.planner import build_sql_from_plan
 from integrations.n8n import nl_to_sql as n8n_nl_to_sql, is_configured as n8n_is_configured
-from integrations.n8n_analysis import analyze_result, is_configured as analysis_is_configured
-
 from .services.pandas_runner import run_pandas_analysis
 
 # ============================================================
@@ -113,65 +108,6 @@ _con = _ddb.connect(r'{settings.DUCKDB_PATH}')
 {left_var} = _con.execute('SELECT * FROM "{table_name}"').df()
 """
     return preamble.strip() + "\n\n" + patched.strip()
-
-
-# ---------------------------------------------------------------------------
-# ♻️ Helpers généraux de réponse/validation
-# ---------------------------------------------------------------------------
-
-
-def _json_error(detail: str, *, status: int = 400, code: str | None = None, extra: dict | None = None) -> JsonResponse:
-    payload = {"detail": detail}
-    if code:
-        payload["code"] = code
-    if extra:
-        payload.update(extra)
-    return JsonResponse(payload, status=status)
-
-
-def _dataset_exists(name: str) -> bool:
-    if not name:
-        return False
-    try:
-        result = duckdb.sql(
-            "SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = LOWER(?)",
-            [name],
-        ).fetchone()
-        return bool(result and result[0])
-    except duckdb.Error:
-        logger.exception("Impossible de vérifier l'existence du dataset %s", name)
-        return False
-
-
-def _safe_limit(raw_limit: str | int | None, *, default: int = 10, max_value: int = 1000) -> int:
-    try:
-        limit = int(raw_limit) if raw_limit is not None else default
-    except (TypeError, ValueError):
-        raise ValueError("Paramètre 'limit' invalide")
-    return max(1, min(limit, max_value))
-
-
-def _to_serializable(value):
-    if value is None:
-        return None
-    if isinstance(value, (np.generic,)):
-        return value.item()
-    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
-        return value.isoformat()
-    if isinstance(value, float) and isnan(value):
-        return None
-    return value
-
-
-def _frame_to_records(df: pd.DataFrame, *, limit: int | None = None) -> list[dict]:
-    sample = df.head(limit) if limit is not None else df
-    if sample.empty:
-        return []
-    serialised = sample.where(pd.notnull(sample), None)
-    return [
-        {k: _to_serializable(v) for k, v in row.items()}
-        for row in serialised.to_dict(orient="records")
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +267,7 @@ def upload_dataset(request):
     try:
         upfile = request.FILES.get("file")
         if not upfile:
-            return _json_error("Champ 'file' requis.")
+            return JsonResponse({"detail": "Champ 'file' requis."}, status=400)
 
         dataset = _normalize_dataset_name(request.data.get("dataset") or os.path.splitext(upfile.name)[0])
         ext = (upfile.name or "").lower().rsplit(".", 1)[-1]
@@ -340,11 +276,11 @@ def upload_dataset(request):
             info = load_to_duckdb(upfile, dataset, file_type=ext if ext != "xls" else "excel")
             return JsonResponse({"ok": True, "table": dataset, **info}, status=201)
 
-        return _json_error("Format non supporté (CSV, XLSX, JSON, Parquet).")
+        return JsonResponse({"detail": "Format non supporté (CSV, XLSX, JSON, Parquet)."}, status=400)
 
     except Exception as e:
         logger.exception("upload_dataset: erreur inattendue")
-        return _json_error(f"Echec import: {e}", status=500)
+        return JsonResponse({"detail": f"Echec import: {e}"}, status=500)
 
 
 @api_view(["GET"])
@@ -354,108 +290,19 @@ def datasets_list(request):
         return JsonResponse({"tables": list_tables()})
     except Exception as e:
         logger.exception("datasets_list: erreur inattendue")
-        return _json_error(str(e), status=500)
+        return JsonResponse({"detail": str(e)}, status=500)
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def datasets_preview(request, table: str):
     try:
-        try:
-            limit = _safe_limit(request.GET.get("limit"), default=10)
-        except ValueError as exc:
-            return _json_error(str(exc))
-
-        if not _dataset_exists(table):
-            return _json_error(f"Dataset '{table}' introuvable.", status=404, code="dataset_not_found")
-
+        limit = max(1, min(int(request.GET.get("limit", 10)), 1000))
         info = profile_table(table, limit=limit)
         return JsonResponse({"table": table, **info})
     except Exception as e:
         logger.exception("datasets_preview: erreur inattendue")
-        return _json_error(str(e), status=500)
-
-
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def datasets_insights(request, table: str):
-    """Fournit des statistiques descriptives et corrélations clés pour un dataset."""
-    try:
-        if not _dataset_exists(table):
-            return _json_error(f"Dataset '{table}' introuvable.", status=404, code="dataset_not_found")
-
-        try:
-            sample_limit = _safe_limit(request.GET.get("sample"), default=500, max_value=5000)
-        except ValueError as exc:
-            return _json_error(str(exc))
-
-        try:
-            df = duckdb.sql(f'SELECT * FROM "{table}" LIMIT {sample_limit}').to_df()
-        except duckdb.Error as exc:
-            logger.warning("datasets_insights: lecture du dataset %s impossible: %s", table, exc)
-            return _json_error(f"Impossible de lire le dataset '{table}'.", status=500)
-
-        if df.empty:
-            return JsonResponse(
-                {
-                    "table": table,
-                    "rows_sampled": 0,
-                    "fields": {},
-                    "summary": [],
-                    "missing_values": {},
-                    "correlations": [],
-                }
-            )
-
-        try:
-            summary_df = df.describe(include="all", datetime_is_numeric=True)
-        except TypeError:
-            summary_df = df.describe(include="all")
-        summary_df = summary_df.transpose().reset_index()
-        summary_df = summary_df.rename(columns={"index": "field"})
-        summary = [
-            {k: _to_serializable(v) for k, v in row.items()}
-            for row in summary_df.where(pd.notnull(summary_df), None).to_dict(orient="records")
-        ]
-
-        missing_values = {
-            column: _to_serializable(int(count))
-            for column, count in df.isna().sum().to_dict().items()
-        }
-
-        numeric_df = df.select_dtypes(include=[np.number])
-        correlations: list[dict] = []
-        if not numeric_df.empty and numeric_df.shape[1] > 1:
-            corr_matrix = numeric_df.corr()
-            for i, col_i in enumerate(corr_matrix.columns):
-                for j in range(i + 1, len(corr_matrix.columns)):
-                    value = corr_matrix.iloc[i, j]
-                    correlations.append(
-                        {
-                            "feature_1": col_i,
-                            "feature_2": corr_matrix.columns[j],
-                            "correlation": _to_serializable(value),
-                        }
-                    )
-            correlations.sort(
-                key=lambda item: abs(item["correlation"]) if item["correlation"] is not None else -1,
-                reverse=True,
-            )
-
-        response = {
-            "table": table,
-            "rows_sampled": len(df),
-            "fields": {col: str(dtype) for col, dtype in df.dtypes.items()},
-            "summary": summary,
-            "missing_values": missing_values,
-            "correlations": correlations[:50],
-            "sample": _frame_to_records(df, limit=50),
-        }
-
-        return JsonResponse(response)
-    except Exception as exc:
-        logger.exception("datasets_insights: erreur inattendue")
-        return _json_error(f"Erreur interne: {exc}", status=500)
+        return JsonResponse({"detail": str(e)}, status=500)
 
 
 @api_view(["POST"])
@@ -465,19 +312,16 @@ def query_sql(request):
     try:
         sql = (request.data.get("sql") or "").strip()
         if not sql:
-            return _json_error("Champ 'sql' requis.")
+            return JsonResponse({"detail": "Champ 'sql' requis."}, status=400)
 
         if not is_safe(sql):
-            return _json_error("Requête SQL non autorisée.")
+            return JsonResponse({"detail": "Requête SQL non autorisée."}, status=400)
 
         rows = run_sql_safe(sql)
         return JsonResponse({"rows": rows})
-    except duckdb.CatalogException as exc:
-        logger.warning("query_sql: dataset introuvable: %s", exc)
-        return _json_error("Dataset introuvable dans la requête.", status=404, code="dataset_not_found")
     except Exception as e:
         logger.exception("query_sql: erreur inattendue")
-        return _json_error(str(e), status=500)
+        return JsonResponse({"detail": str(e)}, status=500)
 
 
 # ---------------------------------------------------------------------------
@@ -498,77 +342,14 @@ def get_schema(dataset: str) -> str:
     except Exception as e:
         logger.warning(f"Impossible de lire le schéma pour {dataset}: {e}")
         return "Schéma non disponible"
-    
-
-import numpy as np
-
-def auto_analyze_result(rows: list[dict], chart_spec: dict, question: str) -> str:
-    """
-    Génère une interprétation automatique simple selon les résultats.
-    """
-    if not rows or not isinstance(rows, list) or len(rows) == 0:
-        return "Aucune donnée à analyser."
-
-    # On essaie d’identifier les colonnes numériques et catégorielles
-    first_row = rows[0]
-    keys = list(first_row.keys())
-    if len(keys) < 2:
-        return "Résultat trop simple pour une analyse automatique."
-
-    x_key = chart_spec.get("x", keys[0])
-    y_key = chart_spec.get("y", keys[1])
-    try:
-        y_values = [float(r[y_key]) for r in rows if r.get(y_key) is not None]
-    except Exception:
-        return "Impossible d’interpréter les valeurs numériques."
-
-    # Statistiques de base
-    n = len(y_values)
-    mean_val = np.mean(y_values)
-    median_val = np.median(y_values)
-    min_val = np.min(y_values)
-    max_val = np.max(y_values)
-    amplitude = max_val - min_val
-
-    # Génération d’une analyse textuelle
-    analysis = []
-
-    # Type détecté
-    typ = (chart_spec.get("type") or "").lower()
-
-    if typ in ["line", "timeseries", "area"]:
-        analysis.append(f"Les données présentent une évolution sur {n} points.")
-        if y_values[-1] > y_values[0]:
-            analysis.append("La tendance générale est à la hausse 📈.")
-        elif y_values[-1] < y_values[0]:
-            analysis.append("La tendance générale est à la baisse 📉.")
-        else:
-            analysis.append("La tendance reste stable sur la période.")
-    elif typ in ["bar", "pie", "histogram", "stacked_bar"]:
-        max_row = max(rows, key=lambda r: r[y_key])
-        min_row = min(rows, key=lambda r: r[y_key])
-        analysis.append(f"La catégorie '{max_row[x_key]}' a la valeur la plus élevée ({max_row[y_key]:.2f}).")
-        analysis.append(f"La catégorie '{min_row[x_key]}' est la plus faible ({min_row[y_key]:.2f}).")
-        if amplitude / mean_val > 0.5:
-            analysis.append("La variation entre catégories est importante.")
-        else:
-            analysis.append("Les valeurs sont relativement homogènes entre catégories.")
-    else:
-        analysis.append("Les résultats sont affichés sous forme tabulaire. Consultez les valeurs clés ci-dessus.")
-
-    analysis.append(f"Valeur moyenne : {mean_val:.2f}, médiane : {median_val:.2f}, min : {min_val:.2f}, max : {max_val:.2f}.")
-    return " ".join(analysis)
-
-
-
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def query_nl(request):
     """
-    NL → (n8n) → SQL/plan → exécution sécurisée → (optionnel) analyse experte n8n
-    avec fallback local si n8n indisponible.
+    Interprète une question naturelle via le LLM (n8n si dispo),
+    puis exécute la requête SQL générée de manière sécurisée.
     """
     try:
         data = request.data or {}
@@ -576,61 +357,40 @@ def query_nl(request):
         dataset = _normalize_dataset_name(data.get("dataset"))
 
         if not question or not dataset:
-            return _json_error("Champs 'question' et 'dataset' requis.")
+            return JsonResponse({"detail": "Champs 'question' et 'dataset' requis."}, status=400)
 
-        if not _dataset_exists(dataset):
-            return _json_error(f"Dataset '{dataset}' introuvable.", status=404, code="dataset_not_found")
-
-        if not _dataset_exists(dataset):
-            return _json_error(f"Dataset '{dataset}' introuvable.", status=404, code="dataset_not_found")
-
-        # 1) Schéma pour contextualiser
         schema = get_schema(dataset)
         extra = {k: v for k, v in data.items() if k not in {"question", "dataset"}}
         extra.update({"schema": schema})
 
-        # 2) NL→SQL via n8n (si dispo)
         payload = {}
         if n8n_is_configured():
             try:
                 payload = n8n_nl_to_sql(question, dataset, extra=extra)
             except Exception as e:
-                logger.warning(f"Erreur n8n (NL→SQL): {e}")
+                logger.warning(f"Erreur n8n: {e}")
 
-        # 3) Cas code Python généré
+        # --------------------- Cas : code Python généré ---------------------
         if payload.get("code_python"):
             code = _inject_duckdb_preamble(payload["code_python"], dataset, prefer_var=dataset)
             result = run_pandas_analysis(code)
-            rows = result.get("rows", [])
-            chart_spec = payload.get("chart_spec", {"type": "custom"})
-            # Analyse experte (optionnelle) + fallback local
-            analysis_text = ""
-            if analysis_is_configured():
-                try:
-                    n8n_out = analyze_result(question, rows, chart_spec)
-                    analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
-                except Exception as e:
-                    logger.warning(f"Analyse n8n échouée: {e}")
-                    analysis_text = auto_analyze_result(rows, chart_spec, question)
-            else:
-                analysis_text = auto_analyze_result(rows, chart_spec, question)
-
             return JsonResponse({
-                "rows": rows,
-                "chart_spec": chart_spec,
-                "summary": (payload.get("summary") or "Analyse automatique générée.")
-                           + (f"\n\n💡 Analyse experte (n8n) : {analysis_text}" if analysis_text else ""),
+                "rows": result.get("rows", []),
+                "chart_spec": payload.get("chart_spec", {"type": "custom"}),
+                "summary": payload.get("summary", ""),
                 "sql": payload.get("sql"),
                 "schema": schema,
             })
 
-        # 4) Cas SQL généré (ou synthèse depuis chart_spec / plan)
-        chart_spec = payload.get("chart_spec", {}) or {}
+        # --------------------- Cas : SQL généré ----------------------------
+        chart_spec = payload.get("chart_spec", {})
         sql = (payload.get("sql") or "").strip()
 
+        # Génération automatique selon le type de graphique
         if not sql and chart_spec:
             sql, chart_spec = _synth_sql_from_spec(dataset, chart_spec)
 
+        # Fallback : génération d’un SQL par défaut
         if not sql:
             date_col, val_col, cat_col = _infer_columns(dataset)
             plan = {
@@ -644,15 +404,16 @@ def query_nl(request):
             sql = build_sql_from_plan(plan)
             chart_spec = {"type": "table"}
 
-        # 5) Sécurité puis exécution
+        # Validation sécurité
         if not sql or not is_safe(sql):
-            return _json_error("SQL généré invalide ou non autorisé.")
+            return JsonResponse({"detail": "SQL généré invalide ou non autorisé."}, status=400)
 
+        # Exécution
         try:
             rows = run_sql_safe(sql)
         except Exception as e:
             logger.error(f"Erreur exécution SQL ({dataset}): {e}")
-            return _json_error(f"Exécution SQL échouée: {e}")
+            return JsonResponse({"detail": f"Exécution SQL échouée: {e}"}, status=400)
 
                 # --------------------------- RÉPONSE FINALE ----------------------------
         # 🔹 Détection automatique d'histogramme pour les GROUP BY COUNT
@@ -669,34 +430,20 @@ def query_nl(request):
             else:
                 chart_spec = {"type": "histogram"}
 
-        # 6) Fix chart + analyse locale / n8n
+        # 🧩 Correction automatique du type de graphique avant réponse
         chart_spec = auto_fix_chart_spec(question, chart_spec, rows)
-
-        analysis_text = ""
-        if analysis_is_configured():
-            try:
-                n8n_out = analyze_result(question, rows, chart_spec)
-                analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
-            except Exception as e:
-                logger.warning(f"Analyse n8n échouée: {e}")
-                analysis_text = auto_analyze_result(rows, chart_spec, question)
-        else:
-            analysis_text = auto_analyze_result(rows, chart_spec, question)
-
-        combined_summary = payload.get("summary") or "Analyse automatique générée."
-        if analysis_text:
-            combined_summary += f"\n\n💡 Analyse experte : {analysis_text}"
+        print("📊 chart_spec final envoyé au frontend :", chart_spec)
 
         return JsonResponse({
             "rows": rows,
             "chart_spec": chart_spec,
-            "summary": combined_summary,
+            "summary": payload.get("summary", ""),
             "sql": sql,
             "schema": schema,
         })
 
 
-
+      
     except Exception as e:
         logger.exception("query_nl: erreur inattendue")
-        return _json_error(f"Erreur interne: {e}", status=500)
+        return JsonResponse({"detail": f"Erreur interne: {e}"}, status=500)
