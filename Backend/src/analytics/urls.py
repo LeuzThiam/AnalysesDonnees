@@ -3,7 +3,8 @@ from . import views
 
 urlpatterns = [
     # Datasets
-    path("datasets", views.datasets_list, name="analytics_datasets_list"),
+    path("datasets/", views.datasets_list, name="analytics_datasets_list"),
+    path("datasets", views.datasets_list, name="analytics_datasets_list_no_slash"),  # Support sans slash
     path("datasets/upload", views.upload_dataset, name="analytics_upload_dataset"),
     path("datasets/<str:table>/preview", views.datasets_preview, name="analytics_datasets_preview"),
 

@@ -5,16 +5,25 @@ import os
 from pathlib import Path
 try:
     from dotenv import load_dotenv
-    BASE_DIR = Path(__file__).resolve().parents[2]  # -> dossier Backend/
+    BASE_DIR = Path(__file__).resolve().parents[3]  # -> dossier Backend/ (depuis src/config/settings/local.py)
+    env_path = BASE_DIR / ".env"
     # ⚠️ override=True pour écraser une variable déjà définie dans la session
-    load_dotenv(BASE_DIR / ".env", override=True)
-except Exception:
+    if env_path.exists():
+        load_dotenv(env_path, override=True)
+        # Debug: vérifier que les variables sont chargées
+        if os.getenv("N8N_NL2SQL_URL"):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[settings] .env chargé depuis {env_path}")
+except Exception as e:
     # pas bloquant si python-dotenv n'est pas installé
-    pass
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"[settings] Impossible de charger .env: {e}")
 
 # --- Dev local ---
 DEBUG = True
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "host.docker.internal"]
 
 # Si tu utilises Vite en dev
 CSRF_TRUSTED_ORIGINS = [

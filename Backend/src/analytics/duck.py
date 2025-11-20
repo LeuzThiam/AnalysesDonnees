@@ -1,6 +1,7 @@
 # Backend/src/analytics/duck.py
 from __future__ import annotations
-import os, io, re, json, warnings
+import os, io, re, json, warnings, logging
+from pathlib import Path
 from typing import List, Dict, Any
 
 import duckdb
@@ -9,14 +10,27 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 warnings.filterwarnings("ignore", category=UserWarning, module="duckdb")
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # ⚙️ CONFIGURATION DU MOTEUR
 # ============================================================
-DB_PATH = os.getenv("DUCKDB_PATH", os.path.join("data", "insight.duckdb"))
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-_con = duckdb.connect(DB_PATH)
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = BASE_DIR / "data" / "insight.duckdb"
+DB_PATH = Path(os.getenv("DUCKDB_PATH", DEFAULT_DB_PATH))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _normalize_cols = str(os.getenv("NORMALIZE_COLS", "0")).lower() in {"1", "true", "yes"}
+
+
+def query(sql: str, params: list | tuple | None = None) -> pd.DataFrame:
+    """
+    Exécute une requête DuckDB en ouvrant une connexion temporaire.
+    Compatible avec l'autoreload Django (aucun verrou permanent).
+    """
+    if params is None:
+        params = []
+    with duckdb.connect(str(DB_PATH)) as con:
+        return con.execute(sql, params).fetchdf()
 
 
 # ============================================================
@@ -94,10 +108,11 @@ def _ensure_df(path_or_file, file_type: str = "csv") -> pd.DataFrame:
 # 🏗️ INGESTION DES DONNÉES DANS DUCKDB
 # ============================================================
 def _create_or_replace_table(df: pd.DataFrame, table: str):
-    _con.execute(f"DROP TABLE IF EXISTS {_id(table)};")
-    _con.register("tmp_df", df)
-    _con.execute(f"CREATE TABLE {_id(table)} AS SELECT * FROM tmp_df;")
-    _con.unregister("tmp_df")
+    with duckdb.connect(str(DB_PATH)) as con:
+        con.execute(f"DROP TABLE IF EXISTS {_id(table)};")
+        con.register("tmp_df", df)
+        con.execute(f"CREATE TABLE {_id(table)} AS SELECT * FROM tmp_df;")
+        con.unregister("tmp_df")
 
 
 def load_to_duckdb(path_or_file, table: str, file_type="csv") -> dict:
@@ -115,13 +130,14 @@ def load_to_duckdb(path_or_file, table: str, file_type="csv") -> dict:
 # 🔍 EXPLORATION DES DONNÉES
 # ============================================================
 def list_tables() -> list[str]:
-    return [r[0] for r in _con.execute("SHOW TABLES;").fetchall()]
+    df = query("SHOW TABLES;")
+    return df.iloc[:, 0].tolist()
 
 
 def profile_table(table: str, limit: int = 10) -> dict:
     """Retourne le schéma + un échantillon + des stats descriptives."""
-    df = _con.execute(f"SELECT * FROM {_id(table)} LIMIT {limit};").fetchdf()
-    desc = _con.execute(f"SELECT * FROM {_id(table)}").fetchdf().describe().T.reset_index()
+    df = query(f"SELECT * FROM {_id(table)} LIMIT {limit};")
+    desc = query(f"SELECT * FROM {_id(table)}").describe().T.reset_index()
     return {
         "columns": [{"name": c, "dtype": str(t)} for c, t in df.dtypes.items()],
         "rows": _jsonify_df(df),
@@ -147,9 +163,9 @@ def run_sql(sql: str) -> pd.DataFrame:
         flags=re.IGNORECASE,
     )
     sql = re.sub(r";+", ";", sql)
-    print(f"🧠 Requête corrigée : {sql}")
+    logger.debug("Requete SQL normalisee: %s", sql)
     try:
-        return _con.execute(sql).fetchdf()
+        return query(sql)
     except Exception as e:
         raise RuntimeError(f"Erreur d'exécution SQL : {e}\nRequête : {sql}")
 
@@ -165,7 +181,7 @@ def auto_analyze(table: str) -> dict:
     - Moyenne, écart-type, min, max pour les numériques
     - Répartition des catégories
     """
-    df = _con.execute(f"SELECT * FROM {_id(table)}").fetchdf()
+    df = query(f"SELECT * FROM {_id(table)}")
     info = []
     for col in df.columns:
         col_data = df[col]

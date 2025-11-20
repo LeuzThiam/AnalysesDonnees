@@ -10,7 +10,6 @@ import decimal
 import logging
 import requests
 from typing import Any, Dict, List, Optional
-from requests.auth import HTTPBasicAuth
 from requests.exceptions import RequestException
 from django.conf import settings
 
@@ -27,12 +26,8 @@ _URL = (
     or ""
 ).strip()
 
-_USER = os.getenv("N8N_BASIC_AUTH_USER") or ""
-_PASS = os.getenv("N8N_BASIC_AUTH_PASSWORD") or ""
 _TIMEOUT = int(os.getenv("N8N_ANALYSE_TIMEOUT") or os.getenv("N8N_TIMEOUT_SECONDS") or 30)
 _VERIFY = str(os.getenv("N8N_VERIFY_SSL") or "1").lower() not in {"0", "false", "no"}
-
-_AUTH = HTTPBasicAuth(_USER, _PASS) if _USER and _PASS else None
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +110,6 @@ def analyze_result(
         resp = requests.post(
             url,
             json=payload_json,
-            auth=_AUTH,
             timeout=_TIMEOUT,
             verify=_VERIFY,
             headers={"Content-Type": "application/json"},

@@ -9,7 +9,6 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny
-import duckdb
 
 # ✅ Imports internes
 from .duck import (
@@ -18,6 +17,7 @@ from .duck import (
     profile_table,
     run_sql,
     auto_analyze,
+    query,
 )
 from .services.guards import is_safe
 from .services.runners import run_sql_safe
@@ -336,7 +336,7 @@ def get_schema(dataset: str) -> str:
         return "Aucun dataset spécifié"
 
     try:
-        df = duckdb.query(f"DESCRIBE {dataset};").to_df()
+        df = query(f'DESCRIBE "{dataset}";')
         if df.empty:
             return "Aucune colonne détectée"
         cols = [f"{row['column_name']} ({row['column_type']})" for _, row in df.iterrows()]
@@ -443,7 +443,6 @@ def query_nl(request):
             result = run_pandas_analysis(code)
             rows = result.get("rows", [])
             chart_spec = payload.get("chart_spec", {"type": "custom"})
-            # Analyse experte (optionnelle) + fallback local
             analysis_text = ""
             if analysis_is_configured():
                 try:
@@ -451,15 +450,15 @@ def query_nl(request):
                     analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
                 except Exception as e:
                     logger.warning(f"Analyse n8n échouée: {e}")
-                    analysis_text = auto_analyze_result(rows, chart_spec, question)
-            else:
-                analysis_text = auto_analyze_result(rows, chart_spec, question)
-
+            base_summary = payload.get("summary") or ""
+            combined_summary = base_summary
+            if analysis_text:
+                prefix = "\n\n💡 Analyse experte : " if combined_summary else "💡 Analyse experte : "
+                combined_summary = (combined_summary + prefix + analysis_text).strip()
             return JsonResponse({
                 "rows": rows,
                 "chart_spec": chart_spec,
-                "summary": (payload.get("summary") or "Analyse automatique générée.")
-                           + (f"\n\n💡 Analyse experte (n8n) : {analysis_text}" if analysis_text else ""),
+                "summary": combined_summary,
                 "sql": payload.get("sql"),
                 "schema": schema,
             })
@@ -504,13 +503,11 @@ def query_nl(request):
                 analysis_text = n8n_out.get("summary") or n8n_out.get("text") or ""
             except Exception as e:
                 logger.warning(f"Analyse n8n échouée: {e}")
-                analysis_text = auto_analyze_result(rows, chart_spec, question)
-        else:
-            analysis_text = auto_analyze_result(rows, chart_spec, question)
 
-        combined_summary = payload.get("summary") or "Analyse automatique générée."
+        combined_summary = payload.get("summary") or ""
         if analysis_text:
-            combined_summary += f"\n\n💡 Analyse experte : {analysis_text}"
+            prefix = "\n\n💡 Analyse experte : " if combined_summary else "💡 Analyse experte : "
+            combined_summary = (combined_summary + prefix + analysis_text).strip()
 
         return JsonResponse({
             "rows": rows,
