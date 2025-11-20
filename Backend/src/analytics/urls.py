@@ -12,4 +12,7 @@ urlpatterns = [
     # Queries
     path("query/sql", views.query_sql, name="analytics_query_sql"),
     path("query/nl", views.query_nl, name="analytics_query_nl"),
+    
+    # Export
+    path("export", views.export_results, name="analytics_export_results"),
 ]

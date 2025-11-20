@@ -4,11 +4,14 @@ import os
 import re
 import json
 import logging
+import io
+import base64
+from datetime import datetime
 import pandas as pd
 from django.conf import settings
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import AllowAny
 
 # ✅ Imports internes
@@ -896,3 +899,288 @@ def query_nl(request):
     except Exception as e:
         logger.exception("query_nl: erreur inattendue")
         return JsonResponse({"detail": f"Erreur interne: {e}"}, status=500)
+
+
+# ============================================================
+# 📥 EXPORT DES RÉSULTATS
+# ============================================================
+
+@api_view(["POST"])
+@parser_classes([JSONParser])
+@permission_classes([AllowAny])
+def export_results(request):
+    """
+    Exporte les résultats d'une requête dans différents formats :
+    - xlsx : Excel avec formatage
+    - pdf : PDF avec graphiques et tableau
+    - csv : CSV (déjà géré côté client, mais disponible ici aussi)
+    """
+    try:
+        format_type = request.data.get("format", "xlsx").lower()
+        rows = request.data.get("rows", [])
+        question = request.data.get("question", "Résultats")
+        dataset = request.data.get("dataset", "")
+        chart_base64 = request.data.get("chart", None)  # Image base64 du graphique
+        summary = request.data.get("summary", "")
+        analysis = request.data.get("analysis", "")
+        sql = request.data.get("sql", "")
+        
+        if not rows:
+            return JsonResponse({"detail": "Aucune donnée à exporter."}, status=400)
+        
+        df = pd.DataFrame(rows)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_base = f"export_{dataset}_{timestamp}" if dataset else f"export_{timestamp}"
+        
+        if format_type == "xlsx":
+            return _export_excel(df, question, dataset, summary, analysis, sql, chart_base64, filename_base)
+        elif format_type == "pdf":
+            return _export_pdf(df, question, dataset, summary, analysis, sql, chart_base64, filename_base)
+        elif format_type == "csv":
+            return _export_csv(df, filename_base)
+        else:
+            return JsonResponse({"detail": f"Format non supporté: {format_type}"}, status=400)
+            
+    except Exception as e:
+        logger.exception("export_results: erreur inattendue")
+        return JsonResponse({"detail": f"Erreur lors de l'export: {e}"}, status=500)
+
+
+def _export_excel(df, question, dataset, summary, analysis, sql, chart_base64, filename_base):
+    """Export Excel avec formatage et graphique."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        from openpyxl.drawing.image import Image
+        import tempfile
+        
+        buffer = io.BytesIO()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Résultats"
+        
+        # Styles
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        title_font = Font(bold=True, size=14)
+        
+        row_num = 1
+        
+        # Titre
+        ws.merge_cells(f'A{row_num}:D{row_num}')
+        ws[f'A{row_num}'] = f"Analyse : {question}"
+        ws[f'A{row_num}'].font = title_font
+        ws[f'A{row_num}'].alignment = Alignment(horizontal="center")
+        row_num += 2
+        
+        # Informations
+        if dataset:
+            ws[f'A{row_num}'] = f"Dataset: {dataset}"
+            row_num += 1
+        if summary:
+            ws[f'A{row_num}'] = "Résumé:"
+            ws[f'A{row_num}'].font = Font(bold=True)
+            row_num += 1
+            ws[f'A{row_num}'] = summary
+            ws.merge_cells(f'A{row_num}:D{row_num + summary.count(chr(10))}')
+            row_num += summary.count(chr(10)) + 2
+        if analysis:
+            ws[f'A{row_num}'] = "Analyse experte:"
+            ws[f'A{row_num}'].font = Font(bold=True)
+            row_num += 1
+            ws[f'A{row_num}'] = analysis
+            ws.merge_cells(f'A{row_num}:D{row_num + analysis.count(chr(10))}')
+            row_num += analysis.count(chr(10)) + 2
+        
+        # Graphique (si disponible)
+        if chart_base64:
+            try:
+                img_data = base64.b64decode(chart_base64.split(',')[-1] if ',' in chart_base64 else chart_base64)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                    tmp.write(img_data)
+                    tmp_path = tmp.name
+                
+                img = Image(tmp_path)
+                img.width = 600
+                img.height = 400
+                ws.add_image(img, f'A{row_num}')
+                row_num += 25  # Espace pour l'image
+                os.unlink(tmp_path)
+            except Exception as e:
+                logger.warning(f"Impossible d'ajouter le graphique à l'export Excel: {e}")
+        
+        row_num += 1
+        
+        # En-têtes
+        for col_num, column_title in enumerate(df.columns, 1):
+            cell = ws.cell(row=row_num, column=col_num)
+            cell.value = column_title
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+        
+        row_num += 1
+        
+        # Données
+        for _, row in df.iterrows():
+            for col_num, value in enumerate(row, 1):
+                cell = ws.cell(row=row_num, column=col_num)
+                cell.value = value
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+            row_num += 1
+        
+        # Ajuster la largeur des colonnes
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column].width = adjusted_width
+        
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        response = HttpResponse(
+            buffer.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="{filename_base}.xlsx"'
+        return response
+        
+    except ImportError:
+        logger.error("openpyxl n'est pas installé. Installation requise: pip install openpyxl")
+        return JsonResponse({"detail": "Export Excel non disponible. Installez openpyxl: pip install openpyxl"}, status=500)
+    except Exception as e:
+        logger.exception("_export_excel: erreur")
+        return JsonResponse({"detail": f"Erreur export Excel: {e}"}, status=500)
+
+
+def _export_pdf(df, question, dataset, summary, analysis, sql, chart_base64, filename_base):
+    """Export PDF avec graphique et tableau."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter, A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        import tempfile
+        
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        story = []
+        styles = getSampleStyleSheet()
+        
+        # Style personnalisé pour le titre
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            textColor=colors.HexColor('#366092'),
+            spaceAfter=12,
+            alignment=1  # Centré
+        )
+        
+        # Titre
+        story.append(Paragraph(f"Analyse : {question}", title_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Informations
+        if dataset:
+            story.append(Paragraph(f"<b>Dataset:</b> {dataset}", styles['Normal']))
+            story.append(Spacer(1, 0.1*inch))
+        
+        if summary:
+            story.append(Paragraph("<b>Résumé:</b>", styles['Heading2']))
+            story.append(Paragraph(summary.replace('\n', '<br/>'), styles['Normal']))
+            story.append(Spacer(1, 0.2*inch))
+        
+        if analysis:
+            story.append(Paragraph("<b>Analyse experte:</b>", styles['Heading2']))
+            story.append(Paragraph(analysis.replace('\n', '<br/>'), styles['Normal']))
+            story.append(Spacer(1, 0.2*inch))
+        
+        # Graphique (si disponible)
+        if chart_base64:
+            try:
+                img_data = base64.b64decode(chart_base64.split(',')[-1] if ',' in chart_base64 else chart_base64)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                    tmp.write(img_data)
+                    tmp_path = tmp.name
+                
+                img = RLImage(tmp_path, width=6*inch, height=4*inch)
+                story.append(img)
+                story.append(Spacer(1, 0.2*inch))
+                os.unlink(tmp_path)
+            except Exception as e:
+                logger.warning(f"Impossible d'ajouter le graphique à l'export PDF: {e}")
+        
+        # Tableau de données
+        if len(df) > 0:
+            story.append(Paragraph("<b>Données:</b>", styles['Heading2']))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Préparer les données pour le tableau (limiter à 100 lignes pour le PDF)
+            data = [df.columns.tolist()]  # En-têtes
+            for _, row in df.head(100).iterrows():  # Limiter à 100 lignes pour le PDF
+                data.append([str(val) for val in row.values])
+            
+            table = Table(data)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#366092')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ]))
+            
+            story.append(table)
+            
+            if len(df) > 100:
+                story.append(Spacer(1, 0.1*inch))
+                story.append(Paragraph(f"<i>Note: Seules les 100 premières lignes sont affichées ({len(df)} lignes au total)</i>", styles['Normal']))
+        
+        doc.build(story)
+        buffer.seek(0)
+        
+        response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename_base}.pdf"'
+        return response
+        
+    except ImportError:
+        logger.error("reportlab n'est pas installé. Installation requise: pip install reportlab")
+        return JsonResponse({"detail": "Export PDF non disponible. Installez reportlab: pip install reportlab"}, status=500)
+    except Exception as e:
+        logger.exception("_export_pdf: erreur")
+        return JsonResponse({"detail": f"Erreur export PDF: {e}"}, status=500)
+
+
+def _export_csv(df, filename_base):
+    """Export CSV simple."""
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False, encoding='utf-8-sig')  # utf-8-sig pour Excel
+    
+    response = HttpResponse(buffer.getvalue(), content_type='text/csv; charset=utf-8-sig')
+    response['Content-Disposition'] = f'attachment; filename="{filename_base}.csv"'
+    return response
