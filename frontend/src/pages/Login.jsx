@@ -9,7 +9,7 @@ export default function Login() {
   const nav = useNavigate();
   const { login } = useAuth();
   const [sp] = useSearchParams();
-  const next = sp.get("next") || "/dashboard";
+  const next = sp.get("next") || "/ask";
 
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");

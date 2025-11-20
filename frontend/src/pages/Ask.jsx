@@ -51,15 +51,28 @@ function ChartRenderer({ rows = [], spec, base64 }) {
     case "bar":
     case "bar_vertical":
       return (
-        <div className="chart-container">
+        <div className="chart-container" style={{ minHeight: "400px" }}>
           <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey={yKey} fill="#4e79a7" />
+            <BarChart data={rows} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+              <XAxis 
+                dataKey={xKey} 
+                tick={{ fill: "#666", fontSize: 12 }}
+                angle={-45}
+                textAnchor="end"
+                height={80}
+              />
+              <YAxis tick={{ fill: "#666", fontSize: 12 }} />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: "rgba(255, 255, 255, 0.95)",
+                  border: "1px solid #ddd",
+                  borderRadius: "8px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                }}
+              />
+              <Legend wrapperStyle={{ paddingTop: "20px" }} />
+              <Bar dataKey={yKey} fill="#4e79a7" radius={[8, 8, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -84,15 +97,35 @@ function ChartRenderer({ rows = [], spec, base64 }) {
     case "line":
     case "timeseries":
       return (
-        <div className="chart-container">
+        <div className="chart-container" style={{ minHeight: "400px" }}>
           <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={rows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={xKey} />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey={yKey} stroke="#f28e2b" strokeWidth={3} dot={false} />
+            <LineChart data={rows} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+              <XAxis 
+                dataKey={xKey} 
+                tick={{ fill: "#666", fontSize: 12 }}
+                angle={-45}
+                textAnchor="end"
+                height={80}
+              />
+              <YAxis tick={{ fill: "#666", fontSize: 12 }} />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: "rgba(255, 255, 255, 0.95)",
+                  border: "1px solid #ddd",
+                  borderRadius: "8px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                }}
+              />
+              <Legend wrapperStyle={{ paddingTop: "20px" }} />
+              <Line 
+                type="monotone" 
+                dataKey={yKey} 
+                stroke="#f28e2b" 
+                strokeWidth={3} 
+                dot={{ fill: "#f28e2b", r: 4 }}
+                activeDot={{ r: 6 }}
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -116,16 +149,34 @@ function ChartRenderer({ rows = [], spec, base64 }) {
 
     case "pie":
       return (
-        <div className="chart-container">
+        <div className="chart-container" style={{ minHeight: "400px" }}>
           <ResponsiveContainer width="100%" height={400}>
             <PieChart>
-              <Pie data={rows} dataKey={yKey} nameKey={xKey} cx="50%" cy="50%" outerRadius={130} label>
+              <Pie 
+                data={rows} 
+                dataKey={yKey} 
+                nameKey={xKey} 
+                cx="50%" 
+                cy="50%" 
+                outerRadius={130} 
+                label={{ fill: "#333", fontSize: 12 }}
+              >
                 {rows.map((_, i) => (
                   <Cell key={i} fill={colors[i % colors.length]} />
                 ))}
               </Pie>
-              <Tooltip />
-              <Legend />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: "rgba(255, 255, 255, 0.95)",
+                  border: "1px solid #ddd",
+                  borderRadius: "8px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                }}
+              />
+              <Legend 
+                wrapperStyle={{ paddingTop: "20px" }}
+                iconType="circle"
+              />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -310,8 +361,8 @@ export default function Ask() {
 
   const [dataset, setDataset] = useState(tableFromQS);
   const [question, setQuestion] = useState("");
-  const [intent, setIntent] = useState("auto");
-  const [limit, setLimit] = useState(1000);
+  const [datasetSearch, setDatasetSearch] = useState("");
+  const [showDatasetList, setShowDatasetList] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [rows, setRows] = useState([]);
@@ -319,10 +370,12 @@ export default function Ask() {
   const [chartSpec, setChartSpec] = useState(null);
   const [sql, setSql] = useState("");
   const [summary, setSummary] = useState("");
+  const [textResponse, setTextResponse] = useState("");
   const [resultText, setResultText] = useState("");
   const [stdout, setStdout] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [analysis, setAnalysis] = useState("");
+  const [showAllRows, setShowAllRows] = useState(false);
 
 
   useEffect(() => {
@@ -331,7 +384,10 @@ export default function Ask() {
         const names = await listDatasets();
         if (Array.isArray(names)) {
           setSuggestions(names);
-          if (!dataset && names.length > 0) setDataset(names[0]);
+          if (!dataset && names.length > 0) {
+            setDataset(names[0]);
+            setDatasetSearch(names[0]);
+          }
         }
       } catch (err) {
         console.warn("Impossible de charger les datasets :", err);
@@ -340,7 +396,16 @@ export default function Ask() {
   }, []);
 
   useEffect(() => {
-    if (tableFromQS && tableFromQS !== dataset) setDataset(tableFromQS);
+    if (dataset) {
+      setDatasetSearch(dataset);
+    }
+  }, [dataset]);
+
+  useEffect(() => {
+    if (tableFromQS && tableFromQS !== dataset) {
+      setDataset(tableFromQS);
+      setDatasetSearch(tableFromQS);
+    }
   }, [tableFromQS]);
 
   const canSubmit = useMemo(
@@ -354,8 +419,10 @@ export default function Ask() {
     setChartSpec(null);
     setSql("");
     setSummary("");
+    setTextResponse("");
     setResultText("");
     setStdout("");
+    setShowAllRows(false);
   };
 
   const onAsk = async (e) => {
@@ -370,7 +437,7 @@ export default function Ask() {
       return;
     }
 
-    const chosenIntent = intent === "auto" ? inferIntent(q) : intent;
+    const chosenIntent = inferIntent(q); // Toujours auto-détecté
 
     try {
       setBusy(true);
@@ -378,7 +445,7 @@ export default function Ask() {
         dataset: ds,
         question: q,
         intent: chosenIntent,
-        limit: Number(limit) > 0 ? Number(limit) : 1000,
+        // Pas de limite : toutes les données seront récupérées
       };
       const data = await unwrap(api.post("/analytics/query/nl", payload));
       setAnalysis(data.analysis || "");
@@ -388,6 +455,7 @@ export default function Ask() {
       setChartSpec(data.chart_spec ?? null);
       setSql(data.sql || "");
       setSummary(data.summary || "");
+      setTextResponse(typeof data.text_response === "string" ? data.text_response : "");
       setResultText(
         typeof data.result === "string"
           ? data.result
@@ -417,162 +485,421 @@ export default function Ask() {
     (rows && rows.length > 0) ||
     !!chart ||
     !!summary ||
-    !!sql ||
     !!resultText ||
     !!stdout ||
-    !!chartSpec;
+    !!chartSpec ||
+    !!textResponse;
 
   return (
-    <div className="ask-wrapper container py-4">
-      <h3 className="ask-title mb-4 text-center text-primary fw-bold">
-        <i className="bi bi-search me-2"></i>
-        Analyse de données interactive
-      </h3>
-
-      <form onSubmit={onAsk} className="ask-form card p-4 shadow-sm border-0">
-        <div className="row g-3 align-items-end">
-          <div className="col-sm-4">
-            <label className="form-label fw-semibold">
-              <i className="bi bi-folder2-open me-1"></i> Dataset (table)
-            </label>
-            <input
-              className="form-control"
-              list="datasets-list"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}
-              placeholder="ex: ventes_2025"
-              autoComplete="off"
-            />
-            <datalist id="datasets-list">
-              {suggestions.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
+    <div className="container py-4">
+      {/* Header Section */}
+      <div className="row mb-4">
+        <div className="col-12">
+          <div className="text-center mb-4">
+            <h2 className="fw-bold text-primary mb-2">
+              <i className="bi bi-graph-up-arrow me-2"></i>
+              Analyse de Données Interactive
+            </h2>
+            <p className="text-muted">
+              Posez vos questions en langage naturel et obtenez des analyses visuelles instantanées
+            </p>
           </div>
+        </div>
+      </div>
 
-          <div className="col-sm-5">
-            <label className="form-label fw-semibold">
-              <i className="bi bi-question-circle me-1"></i> Question
-            </label>
-            
-              <TextareaAutosize
-              className="form-control"
-              minRows={1}
-              maxRows={4}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="ex: évolution mensuelle du total des ventes"
-            />
+      {/* Form Section */}
+      <div className="row mb-4">
+        <div className="col-12">
+          <div className="card shadow-lg border-0">
+            <div className="card-header bg-primary text-white py-3">
+              <h5 className="mb-0 fw-semibold">
+                <i className="bi bi-sliders me-2"></i>
+                Configuration de l'analyse
+              </h5>
+            </div>
+            <div className="card-body p-4">
+              <form onSubmit={onAsk}>
+                <div className="row g-4">
+                  {/* Dataset Selection */}
+                  <div className="col-md-4">
+                    <label className="form-label fw-semibold mb-2">
+                      <i className="bi bi-database me-2 text-primary"></i>
+                      Dataset
+                    </label>
+                    <div className="position-relative">
+                      <div className="input-group">
+                        <span className="input-group-text bg-light">
+                          <i className="bi bi-search text-muted"></i>
+                        </span>
+                        <input
+                          className="form-control form-control-lg"
+                          type="text"
+                          value={datasetSearch}
+                          onChange={(e) => {
+                            setDatasetSearch(e.target.value);
+                            setShowDatasetList(true);
+                          }}
+                          onFocus={() => setShowDatasetList(true)}
+                          onBlur={() => setTimeout(() => setShowDatasetList(false), 200)}
+                          placeholder="Rechercher un dataset..."
+                          autoComplete="off"
+                        />
+                      </div>
+                      {showDatasetList && suggestions.length > 0 && (
+                        <div
+                          className="position-absolute w-100 bg-white border rounded shadow-lg mt-1"
+                          style={{
+                            zIndex: 1000,
+                            maxHeight: "300px",
+                            overflowY: "auto",
+                          }}
+                        >
+                          {suggestions
+                            .filter((name) =>
+                              name.toLowerCase().includes(datasetSearch.toLowerCase())
+                            )
+                            .map((name) => (
+                              <div
+                                key={name}
+                                className="px-3 py-2"
+                                style={{
+                                  cursor: "pointer",
+                                  backgroundColor: dataset === name ? "#e7f3ff" : "transparent",
+                                  transition: "background-color 0.2s",
+                                }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  setDataset(name);
+                                  setDatasetSearch(name);
+                                  setShowDatasetList(false);
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = "#f8f9fa";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor =
+                                    dataset === name ? "#e7f3ff" : "transparent";
+                                }}
+                              >
+                                <i className="bi bi-table me-2 text-primary"></i>
+                                <strong>{name}</strong>
+                              </div>
+                            ))}
+                          {suggestions.filter((name) =>
+                            name.toLowerCase().includes(datasetSearch.toLowerCase())
+                          ).length === 0 && (
+                            <div className="px-3 py-3 text-center text-muted">
+                              <i className="bi bi-search me-2"></i>
+                              Aucun dataset trouvé
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {dataset && (
+                      <div className="mt-2">
+                        <span className="badge bg-success">
+                          <i className="bi bi-check-circle me-1"></i>
+                          {dataset}
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
+                  {/* Question Input */}
+                  <div className="col-md-8">
+                    <label className="form-label fw-semibold mb-2">
+                      <i className="bi bi-chat-quote me-2 text-primary"></i>
+                      Votre question
+                    </label>
+                    <TextareaAutosize
+                      className="form-control form-control-lg"
+                      minRows={2}
+                      maxRows={5}
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      placeholder="Ex: Quels sont les joueurs ayant marqué plus de 10 buts ?"
+                      style={{ resize: "none" }}
+                    />
+                    <small className="text-muted">
+                      <i className="bi bi-info-circle me-1"></i>
+                      Posez votre question en langage naturel
+                    </small>
+                  </div>
 
+                  {/* Submit Button */}
+                  <div className="col-12">
+                    <div className="d-grid">
+                      <button
+                        className="btn btn-primary btn-lg shadow-sm"
+                        type="submit"
+                        disabled={!canSubmit}
+                        style={{
+                          padding: "12px 24px",
+                          fontSize: "1.1rem",
+                          fontWeight: "600",
+                        }}
+                      >
+                        {busy ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                            Analyse en cours...
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-rocket-takeoff me-2"></i>
+                            Lancer l'analyse
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </form>
+            </div>
           </div>
+        </div>
+      </div>
 
-          <div className="col-sm-3">
-            <div className="row g-2">
-              <div className="col-7">
-                <label className="form-label fw-semibold">
-                  <i className="bi bi-bullseye me-1"></i> Intent
-                </label>
-                <select
-                  className="form-select"
-                  value={intent}
-                  onChange={(e) => setIntent(e.target.value)}
-                >
-                  <option value="auto">Auto</option>
-                  <option value="timeseries_total">Timeseries total</option>
-                  <option value="top_total">Top total</option>
-                  <option value="top_growth">Top croissance</option>
-                  <option value="anomaly_zscore">Anomalies (z-score)</option>
-                </select>
-              </div>
-              <div className="col-5">
-                <label className="form-label fw-semibold">
-                  <i className="bi bi-hash me-1"></i> Limit
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  className="form-control"
-                  value={limit}
-                  onChange={(e) => setLimit(e.target.value)}
-                />
+      {/* Error Alert */}
+      {error && (
+        <div className="row mb-4">
+          <div className="col-12">
+            <div className="alert alert-danger alert-dismissible fade show shadow-sm border-0" role="alert">
+              <div className="d-flex align-items-start">
+                <i className="bi bi-exclamation-triangle-fill fs-4 me-3 mt-1"></i>
+                <div className="flex-grow-1">
+                  <h6 className="alert-heading fw-bold mb-2">Erreur lors de l'analyse</h6>
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: "1.6" }}>
+                    {error.split("\n").map((line, idx) => (
+                      <p key={idx} className={idx > 0 ? "mt-2 mb-0" : "mb-0"}>
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-
-          <div className="col-12 text-center mt-3">
-            <button
-              className="btn btn-primary btn-lg shadow rounded-pill px-4"
-              disabled={!canSubmit}
-            >
-              {busy ? (
-                <>
-                  <i className="bi bi-hourglass-split me-2"></i>Analyse en cours…
-                </>
-              ) : (
-                <>
-                  <i className="bi bi-rocket-takeoff me-2"></i>Lancer l’analyse
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </form>
-
-      {error && <div className="alert alert-danger mt-3">{error}</div>}
-      {summary && <div className="alert alert-info mt-3 shadow-sm">{summary}</div>}
-      {analysis && (
-        <div className="alert alert-success mt-3 shadow-sm">
-          <h6 className="fw-bold mb-2"><i className="bi bi-lightbulb me-1"></i> Analyse automatique</h6>
-          <p className="mb-0">{analysis}</p>
         </div>
       )}
 
+      {/* Results Section */}
+      {hasAnyResult && (
+        <div className="row g-4">
+          {/* Summary Card */}
+          {summary && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0">
+                <div className="card-header bg-info text-white">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-info-circle me-2"></i>
+                    Résumé
+                  </h6>
+                </div>
+                <div className="card-body">
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: "1.8", fontSize: "1.05rem" }}>
+                    {summary.split("\n\n").map((paragraph, idx) => (
+                      <p key={idx} className={idx > 0 ? "mt-3 mb-0" : "mb-0"}>
+                        {paragraph}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-      {sql && (
-        <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-code-slash me-2"></i> SQL généré
-          </summary>
-          <pre className="bg-light p-2 mb-0">
-            <code>{sql}</code>
-          </pre>
-        </details>
-      )}
+          {/* Expert Analysis Card */}
+          {analysis && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0 border-start border-4 border-success">
+                <div className="card-header bg-success text-white">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-lightbulb-fill me-2"></i>
+                    Analyse experte
+                  </h6>
+                </div>
+                <div className="card-body">
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: "1.8", fontSize: "1.05rem" }}>
+                    {analysis.split("\n\n").map((paragraph, idx) => (
+                      <p key={idx} className={idx > 0 ? "mt-3 mb-0" : "mb-0"}>
+                        {paragraph}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-      {(chartSpec || chart) && <ChartRenderer rows={rows || []} spec={chartSpec} base64={chart} />}
+          {/* Text Response Card */}
+          {textResponse && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0 border-start border-4 border-primary">
+                <div className="card-header bg-primary text-white">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-chat-dots-fill me-2"></i>
+                    Réponse
+                  </h6>
+                </div>
+                <div className="card-body">
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: "1.8", fontSize: "1.1rem" }}>
+                    {textResponse.split("\n").map((line, idx) => (
+                      <p key={idx} className={idx > 0 ? "mt-2 mb-0" : "mb-0"}>
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-      {rows?.length > 0 && (
-        <div className="mt-4">
-          <DataTable rows={rows} />
+          {/* Chart Card */}
+          {!textResponse && (chartSpec || chart) && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0">
+                <div className="card-header bg-white border-bottom">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-bar-chart-line-fill me-2 text-primary"></i>
+                    Visualisation
+                  </h6>
+                </div>
+                <div className="card-body p-4">
+                  <ChartRenderer rows={rows || []} spec={chartSpec} base64={chart} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Data Table Card */}
+          {rows?.length > 0 && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0">
+                <div className="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-table me-2 text-primary"></i>
+                    Données ({rows.length} ligne{rows.length > 1 ? "s" : ""})
+                  </h6>
+                  <span className="badge bg-primary">{rows.length} résultat{rows.length > 1 ? "s" : ""}</span>
+                </div>
+                <div className="card-body p-0">
+                  <div className="table-responsive">
+                    <DataTable rows={showAllRows ? rows : rows.slice(0, 10)} />
+                  </div>
+                  {rows.length > 10 && (
+                    <div className="card-footer bg-white border-top text-center py-3">
+                      <button
+                        className="btn btn-outline-primary"
+                        onClick={() => setShowAllRows(!showAllRows)}
+                      >
+                        {showAllRows ? (
+                          <>
+                            <i className="bi bi-chevron-up me-2"></i>
+                            Voir moins (afficher 10 premières lignes)
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-chevron-down me-2"></i>
+                            Voir plus ({rows.length - 10} ligne{rows.length - 10 > 1 ? "s" : ""} supplémentaire{rows.length - 10 > 1 ? "s" : ""})
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SQL Code Card - Masqué pour l'utilisateur */}
+          {/* {sql && (
+            <div className="col-12">
+              <div className="card shadow-sm border-0">
+                <div className="card-header bg-dark text-white">
+                  <h6 className="mb-0 fw-semibold">
+                    <i className="bi bi-code-slash me-2"></i>
+                    Requête SQL générée
+                  </h6>
+                </div>
+                <div className="card-body bg-dark text-light p-3">
+                  <pre className="mb-0" style={{ fontSize: "0.9rem", lineHeight: "1.6" }}>
+                    <code>{sql}</code>
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )} */}
+
+          {/* Additional Results */}
+          {(resultText || stdout) && (
+            <div className="col-12">
+              <div className="accordion" id="resultsAccordion">
+                {resultText && (
+                  <div className="accordion-item">
+                    <h2 className="accordion-header">
+                      <button
+                        className="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#resultText"
+                      >
+                        <i className="bi bi-bar-chart-line me-2"></i>
+                        Résultat détaillé
+                      </button>
+                    </h2>
+                    <div id="resultText" className="accordion-collapse collapse" data-bs-parent="#resultsAccordion">
+                      <div className="accordion-body">
+                        <pre className="bg-light p-3 rounded">
+                          <code>{resultText}</code>
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {stdout && (
+                  <div className="accordion-item">
+                    <h2 className="accordion-header">
+                      <button
+                        className="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#stdout"
+                      >
+                        <i className="bi bi-terminal me-2"></i>
+                        Sortie système
+                      </button>
+                    </h2>
+                    <div id="stdout" className="accordion-collapse collapse" data-bs-parent="#resultsAccordion">
+                      <div className="accordion-body">
+                        <pre className="bg-dark text-light p-3 rounded">
+                          <code>{stdout}</code>
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {resultText && (
-        <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-bar-chart-line me-2"></i> Résultat
-          </summary>
-          <pre className="bg-light p-2 mb-0">
-            <code>{resultText}</code>
-          </pre>
-        </details>
-      )}
-
-      {stdout && (
-        <details className="mt-3">
-          <summary className="fw-semibold">
-            <i className="bi bi-terminal me-2"></i> Sortie (stdout)
-          </summary>
-          <pre className="bg-light p-2 mb-0">
-            <code>{stdout}</code>
-          </pre>
-        </details>
-      )}
-
+      {/* Empty State */}
       {!busy && !error && !hasAnyResult && (
-        <div className="text-muted text-center mt-4">
-          <i className="bi bi-clipboard-data me-2"></i>Aucun résultat pour l’instant.
+        <div className="row">
+          <div className="col-12">
+            <div className="card shadow-sm border-0">
+              <div className="card-body text-center py-5">
+                <i className="bi bi-clipboard-data display-1 text-muted mb-3"></i>
+                <h5 className="fw-semibold mb-2">Aucun résultat</h5>
+                <p className="text-muted mb-0">
+                  Posez une question ci-dessus pour commencer l'analyse
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

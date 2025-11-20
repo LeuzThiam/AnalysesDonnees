@@ -83,11 +83,42 @@ export default function FileUploader({ onUploaded, apiBase }) {
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
         onClick={() => !busy && inputRef.current?.click()}
-        className="p-4 text-center border border-2 border-secondary-subtle rounded-4 bg-light"
-        style={{ cursor: busy ? "not-allowed" : "pointer" }}
+        className="p-5 text-center border border-2 border-dashed rounded-4 bg-light position-relative"
+        style={{
+          cursor: busy ? "not-allowed" : "pointer",
+          transition: "all 0.3s ease",
+          borderColor: busy ? "#dee2e6" : "#0d6efd",
+        }}
+        onMouseEnter={(e) => {
+          if (!busy) {
+            e.currentTarget.style.backgroundColor = "#f8f9fa";
+            e.currentTarget.style.borderColor = "#0d6efd";
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!busy) {
+            e.currentTarget.style.backgroundColor = "#f8f9fa";
+            e.currentTarget.style.borderColor = "#dee2e6";
+          }
+        }}
       >
-        <div className="fw-semibold">Deposez un CSV/XLSX ici</div>
-        <div className="text-muted small">ou cliquez pour selectionner…</div>
+        <i className="bi bi-cloud-upload display-4 text-primary mb-3 d-block"></i>
+        <div className="fw-semibold fs-5 mb-2">Déposez un fichier CSV ou XLSX ici</div>
+        <div className="text-muted small mb-3">ou cliquez pour sélectionner un fichier</div>
+        <div className="d-flex justify-content-center gap-2 flex-wrap">
+          <span className="badge bg-secondary">
+            <i className="bi bi-filetype-csv me-1"></i>CSV
+          </span>
+          <span className="badge bg-secondary">
+            <i className="bi bi-file-earmark-excel me-1"></i>XLSX
+          </span>
+          <span className="badge bg-secondary">
+            <i className="bi bi-file-earmark-excel me-1"></i>XLS
+          </span>
+        </div>
+        <div className="text-muted small mt-2">
+          Taille maximale : {MAX_SIZE_MB} Mo
+        </div>
         <input
           ref={inputRef}
           type="file"
@@ -98,9 +129,29 @@ export default function FileUploader({ onUploaded, apiBase }) {
         />
       </div>
 
-      {busy  && <ProgressBar animated now={100} className="my-2" />}
-      {msg   && <Alert variant="success" className="mt-2 mb-0 py-2">{msg}</Alert>}
-      {error && <Alert variant="danger"  className="mt-2 mb-0 py-2">{error}</Alert>}
+      {busy && (
+        <div className="mt-3">
+          <div className="d-flex align-items-center gap-2 mb-2">
+            <div className="spinner-border spinner-border-sm text-primary" role="status">
+              <span className="visually-hidden">Chargement...</span>
+            </div>
+            <span className="text-muted">Import en cours...</span>
+          </div>
+          <ProgressBar animated now={100} className="mt-2" />
+        </div>
+      )}
+      {msg && (
+        <Alert variant="success" className="mt-3 mb-0 d-flex align-items-center">
+          <i className="bi bi-check-circle-fill me-2"></i>
+          {msg}
+        </Alert>
+      )}
+      {error && (
+        <Alert variant="danger" className="mt-3 mb-0 d-flex align-items-center">
+          <i className="bi bi-exclamation-triangle-fill me-2"></i>
+          {error}
+        </Alert>
+      )}
     </div>
   );
 }

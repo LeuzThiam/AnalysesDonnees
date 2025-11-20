@@ -88,13 +88,18 @@ def analyze_result(
     url = _require_url()
     chart_spec = chart_spec or {}
 
-    # Limite le nombre de lignes envoyées à n8n (évite les payloads trop lourds)
-    limited_rows = rows[:200] if isinstance(rows, list) else []
+    # Pas de limite : envoyer toutes les données disponibles
+    total_rows = len(rows) if isinstance(rows, list) else 0
+    all_rows = rows if isinstance(rows, list) else []
+    
+    # Log pour debug
+    logger.info(f"[n8n] Analyse : envoi de {len(all_rows)} lignes (toutes les données disponibles)")
 
     payload = {
         "question": question,
-        "rows": limited_rows,
+        "rows": all_rows,
         "chart_spec": chart_spec,
+        "total_rows": total_rows,  # Informer n8n du nombre total de lignes
     }
 
     # Sérialisation propre (convertit numpy/Decimal → JSON)
@@ -104,7 +109,7 @@ def analyze_result(
         logger.warning(f"Impossible de sérialiser le payload pour n8n : {e}")
         payload_json = payload
 
-    logger.info(f"[n8n] → Analyse POST {url} (rows={len(limited_rows)}, timeout={_TIMEOUT}s)")
+    logger.info(f"[n8n] → Analyse POST {url} (rows={len(all_rows)}, timeout={_TIMEOUT}s)")
 
     try:
         resp = requests.post(

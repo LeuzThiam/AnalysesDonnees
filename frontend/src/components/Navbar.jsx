@@ -11,7 +11,6 @@ export default function Navbar(){
       <RBNavbar.Collapse id="nav">
         <Nav className="me-auto">
           <NavLink to="/" className={link}>Accueil</NavLink>
-          <NavLink to="/dashboard" className={link}>Dashboard</NavLink>
           <NavLink to="/ask" className={link}>Question</NavLink>
         </Nav>
       </RBNavbar.Collapse>

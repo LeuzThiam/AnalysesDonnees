@@ -9,7 +9,7 @@ export default function Register() {
   const nav = useNavigate();
   const { register, login } = useAuth();
   const [sp] = useSearchParams();
-  const next = sp.get("next") || "/dashboard";
+  const next = sp.get("next") || "/ask";
 
   const [email, setEmail]         = useState("");
   const [password, setPassword]   = useState("");

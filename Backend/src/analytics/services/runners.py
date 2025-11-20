@@ -59,13 +59,21 @@ def run_sql_safe(
         # même avec échantillonnage, on garde un LIMIT haut pour éviter l'explosion
         safe_sql = add_limit_if_missing(safe_sql, add_limit or 5000)
     else:
-        safe_sql = add_limit_if_missing(safe_sql, add_limit)
+        # Si add_limit est None, on n'ajoute pas de LIMIT (pour datasets_all)
+        if add_limit is not None:
+            safe_sql = add_limit_if_missing(safe_sql, add_limit)
 
     try:
         df = _run_sql(safe_sql)  # DataFrame
         return _jsonify_df(df)
     except Exception as e:
-        raise QueryError(f"Echec de l'exécution SQL: {e}") from e
+        # Préserver l'erreur originale pour le formatage dans views.py
+        error_msg = str(e)
+        # Si c'est déjà une RuntimeError avec le message formaté, on la préserve
+        if "Erreur d'exécution SQL :" in error_msg:
+            raise QueryError(f"Echec de l'exécution SQL: {error_msg}") from e
+        else:
+            raise QueryError(f"Echec de l'exécution SQL: {error_msg}") from e
 
 
 # ------------------ Pandas Runner ------------------ #
